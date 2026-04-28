@@ -32,9 +32,9 @@ import sys
 
 TICKERS = {
     "SPY": "S&P 500 ETF (SPY)",
-    "QQQ": "Nasdaq 100 ETF (QQQ)",
-    "IWM": "Russell 2000 ETF (IWM)",
-    "SPX": "S&P 500 Index (^SPX)",
+  "  "QQQ": "Nasdaq 100 ETF (QQQ)",
+ "   "IWM": "Russell 2000 ETF (IWM)",
+"    "SPX": "S&P 500 Index (^SPX)",
 }
 
 RISK_FREE_RATE = 0.053       # US 3M T-Bill ~5.3% (ปรับตามจริง)
