@@ -1,15 +1,8 @@
 """
-IV Surface จากข้อมูลจริง — US Index Options
-=============================================
-แหล่งข้อมูล : yfinance (Yahoo Finance — delayed ~15 min)
-วิธีคำนวณ  : Black-Scholes + Brent's Method (invert price → IV)
-Visualization: Plotly 3D Surface (HTML interactive)
-
-ติดตั้ง:
-  pip install yfinance numpy pandas scipy plotly
-
-รัน:
-  python iv_surface_real.py
+IV Surface — US Index Options  (Streamlit App)
+==============================================
+รัน:  streamlit run iv_surface_app.py
+ติดตั้ง: pip install streamlit yfinance numpy pandas scipy plotly
 """
 
 import warnings
@@ -24,18 +17,34 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import yfinance as yf
 from datetime import datetime
-import sys
+import streamlit as st
 
-# ─────────────────────────────────────────────
-# CONFIG
-# ─────────────────────────────────────────────
-TICKERS = {
-    "1": ("SPY",  "S&P 500 ETF (SPY)"),
-    "2": ("QQQ",  "Nasdaq 100 ETF (QQQ)"),
-    "3": ("IWM",  "Russell 2000 ETF (IWM)"),
-    "4": ("^SPX", "S&P 500 Index (SPX)"),
+# ── Page config ──────────────────────────────
+st.set_page_config(
+    page_title="IV Surface — US Index",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown("""
+<style>
+[data-testid="stSidebar"] { background: #0d1425; }
+body, .stApp { background: #080d1c; color: #c8d8f0; }
+h1,h2,h3 { color: #e0eeff; }
+.metric-card {
+    background: #0d1a30;
+    border: 1px solid #1a2e50;
+    border-radius: 8px;
+    padding: 12px 16px;
+    text-align: center;
 }
+.metric-label { font-size: 11px; color: #6080a0; margin-bottom: 4px; }
+.metric-value { font-size: 24px; font-weight: 600; color: #e0f0ff; }
+</style>
+""", unsafe_allow_html=True)
 
+# ── Constants ────────────────────────────────
 RISK_FREE_RATE = 0.053
 MIN_BID        = 0.05
 MIN_VOLUME     = 1
@@ -45,10 +54,14 @@ MAX_IV         = 3.0
 GRID_NK        = 60
 GRID_NT        = 50
 
+TICKERS = {
+    "SPY  — S&P 500 ETF":      "SPY",
+    "QQQ  — Nasdaq 100 ETF":   "QQQ",
+    "IWM  — Russell 2000 ETF": "IWM",
+    "^SPX — S&P 500 Index":    "^SPX",
+}
 
-# ─────────────────────────────────────────────
-# BLACK-SCHOLES
-# ─────────────────────────────────────────────
+# ── Black-Scholes ────────────────────────────
 def bs_price(S, K, T, r, sigma, opt_type="call"):
     if T <= 1e-6 or sigma <= 1e-6:
         return max(0.0, (S - K) if opt_type == "call" else (K - S))
@@ -56,8 +69,7 @@ def bs_price(S, K, T, r, sigma, opt_type="call"):
     d2 = d1 - sigma * np.sqrt(T)
     if opt_type == "call":
         return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
-    else:
-        return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+    return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
 
 
 def calc_iv(market_price, S, K, T, r, opt_type="call"):
@@ -67,226 +79,80 @@ def calc_iv(market_price, S, K, T, r, opt_type="call"):
     intrinsic = max(0.0, (fwd - K) if opt_type == "call" else (K - fwd))
     if market_price <= intrinsic * np.exp(-r * T) * 0.999:
         return np.nan
-
-    def objective(sigma):
-        return bs_price(S, K, T, r, sigma, opt_type) - market_price
-
+    def obj(sigma): return bs_price(S, K, T, r, sigma, opt_type) - market_price
     try:
-        if objective(1e-4) * objective(MAX_IV) > 0:
-            return np.nan
-        iv = brentq(objective, 1e-4, MAX_IV, xtol=1e-7, maxiter=200)
+        if obj(1e-4) * obj(MAX_IV) > 0: return np.nan
+        iv = brentq(obj, 1e-4, MAX_IV, xtol=1e-7, maxiter=200)
         return iv if 0.005 <= iv <= MAX_IV else np.nan
     except Exception:
         return np.nan
 
 
-# ─────────────────────────────────────────────
-# STEP 1 — เลือก Index
-# ─────────────────────────────────────────────
-def select_ticker():
-    print("\n" + "="*52)
-    print("  US Index IV Surface  —  เลือก Underlying")
-    print("="*52)
-    for k, (sym, name) in TICKERS.items():
-        print(f"  [{k}] {sym:6s}  {name}")
-    c = input("\nเลือก (1-4, default=1): ").strip() or "1"
-    sym, name = TICKERS.get(c, TICKERS["1"])
-    print(f"  -> เลือก: {name}")
-    return sym, name
-
-
-# ─────────────────────────────────────────────
-# STEP 2 — โหลดแค่รายการ Expiry (เร็ว)
-# ─────────────────────────────────────────────
+# ── Fetch expiry list (cached 5 min) ─────────
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_expiry_list(sym):
-    print(f"\n  กำลังโหลดรายการ Expiry dates ...")
     stock = yf.Ticker(sym)
-
-    hist = stock.history(period="2d")
+    hist  = stock.history(period="2d")
     if hist.empty:
-        raise ValueError(f"ไม่พบข้อมูลราคา {sym}")
-    S = float(hist["Close"].iloc[-1])
-
-    expiries = stock.options   # แค่ดึง list string — ไม่โหลด chain
-    today    = datetime.now()
-
-    rows = []
-    for exp in expiries:
+        return None, None, None
+    S       = float(hist["Close"].iloc[-1])
+    today   = datetime.now()
+    rows    = []
+    for exp in stock.options:
         exp_dt = datetime.strptime(exp, "%Y-%m-%d")
         days   = (exp_dt - today).days
-        if days < 1:
-            continue
+        if days < 1: continue
         rows.append({"date": exp, "days": days, "T": days / 365.0})
-
-    df_exp = pd.DataFrame(rows)
-    print(f"  Spot Price : {S:,.2f}")
-    print(f"  พบ Expiry  : {len(df_exp)} dates (จาก {df_exp['date'].iloc[0]} ถึง {df_exp['date'].iloc[-1]})")
-    return df_exp, S, stock
+    return pd.DataFrame(rows), S, stock
 
 
-# ─────────────────────────────────────────────
-# STEP 3 — User เลือก Expiry Mode
-# ─────────────────────────────────────────────
-def select_expiries(df_exp):
-    print("\n" + "="*52)
-    print("  เลือกโหมดการโหลด Expiry")
-    print("="*52)
-    print("  [1]  เลือก 1 วัน          (ดู Smile เดี่ยว)")
-    print("  [2]  เลือกช่วงวัน          (สร้าง Surface หลาย expiry)")
-    print("  [3]  เลือก Preset          (1W 1M 3M 6M 1Y ...)")
-    print("  [4]  เลือกเองทีละวัน       (เลือก multiple จาก list)")
-
-    mode = input("\nเลือก mode (1-4, default=2): ").strip() or "2"
-
-    if   mode == "1": return _select_single(df_exp)
-    elif mode == "3": return _select_preset(df_exp)
-    elif mode == "4": return _select_manual(df_exp)
-    else:             return _select_range(df_exp)
-
-
-def _fmt_lbl(days):
-    if days < 30:   return f"{days}d"
-    elif days < 365: return f"{days//30}M"
-    else:            return f"{days/365:.1f}Y"
-
-
-def _show_table(df_exp):
-    print(f"\n  {'No':>4}  {'Date':>12}  {'Days':>6}  {'Label':>6}")
-    print(f"  {'─'*33}")
-    for i, row in df_exp.iterrows():
-        print(f"  {i+1:>4}  {row['date']:>12}  {int(row['days']):>6}  {_fmt_lbl(int(row['days'])):>6}")
-
-
-def _select_single(df_exp):
-    _show_table(df_exp)
-    idx = int(input(f"\nเลือกหมายเลข (1-{len(df_exp)}): ").strip()) - 1
-    sel = df_exp.iloc[[idx]].reset_index(drop=True)
-    print(f"  -> เลือก: {sel.iloc[0]['date']}  ({int(sel.iloc[0]['days'])} วัน)")
-    return sel
-
-
-def _select_range(df_exp):
-    print(f"\n  Expiry available: {int(df_exp['days'].min())} – {int(df_exp['days'].max())} วัน\n")
-    d_min   = int(input("  ช่วงเริ่มต้น (วัน, default=7):    ").strip() or "7")
-    d_max   = int(input("  ช่วงสิ้นสุด  (วัน, default=365):  ").strip() or "365")
-    n_max   = int(input("  โหลดสูงสุด  (expiry, default=10): ").strip() or "10")
-
-    filtered = df_exp[(df_exp["days"] >= d_min) & (df_exp["days"] <= d_max)]
-    if filtered.empty:
-        print("  ไม่พบ expiry ในช่วงนี้ — ใช้ทั้งหมด")
-        filtered = df_exp
-
-    # Log-space sampling ถ้ามีเยอะ
-    if len(filtered) > n_max:
-        log_idx = np.round(np.linspace(0, len(filtered)-1, n_max)).astype(int)
-        filtered = filtered.iloc[log_idx]
-
-    sel = filtered.reset_index(drop=True)
-    print(f"\n  -> เลือก {len(sel)} expiry:")
-    for _, r in sel.iterrows():
-        print(f"     {r['date']}  ({int(r['days'])} วัน  /  {_fmt_lbl(int(r['days']))})")
-    return sel
-
-
-def _select_preset(df_exp):
-    PRESETS = {
-        "1": ([7, 14, 30, 60, 90, 180, 365],    "Weekly+Monthly  1W→1Y"),
-        "2": ([30, 60, 90, 180, 365, 730],       "Monthly-Long    1M→2Y"),
-        "3": ([7, 14, 21, 30, 45, 60, 90],       "Near-term       1W→3M"),
-        "4": ([90, 180, 270, 365, 540, 730],      "Long-term       3M→2Y"),
-        "5": ([7, 30, 90, 365],                   "Sparse 4 pts    1W/1M/3M/1Y"),
-    }
-    print()
-    for k, (_, lbl) in PRESETS.items():
-        print(f"  [{k}]  {lbl}")
-    pc = input("\nเลือก preset (1-5, default=1): ").strip() or "1"
-    targets, label = PRESETS.get(pc, PRESETS["1"])
-
-    sel_rows = []
-    for t in targets:
-        if t < df_exp["days"].min() or t > df_exp["days"].max():
-            continue
-        idx = (df_exp["days"] - t).abs().idxmin()
-        sel_rows.append(df_exp.loc[idx])
-
-    sel = pd.DataFrame(sel_rows).drop_duplicates("date").reset_index(drop=True)
-    print(f"\n  -> Preset: {label}  ({len(sel)} expiry):")
-    for _, r in sel.iterrows():
-        print(f"     {r['date']}  ({int(r['days'])} วัน  /  {_fmt_lbl(int(r['days']))})")
-    return sel
-
-
-def _select_manual(df_exp):
-    _show_table(df_exp)
-    raw = input(f"\nพิมพ์หมายเลขที่ต้องการ คั่นด้วยเว้นวรรค (เช่น: 1 3 5 8): ").strip()
-    idxs = [int(x)-1 for x in raw.split() if x.isdigit()]
-    idxs = [i for i in idxs if 0 <= i < len(df_exp)]
-    sel  = df_exp.iloc[idxs].reset_index(drop=True)
-    print(f"\n  -> เลือก {len(sel)} expiry:")
-    for _, r in sel.iterrows():
-        print(f"     {r['date']}  ({int(r['days'])} วัน  /  {_fmt_lbl(int(r['days']))})")
-    return sel
-
-
-# ─────────────────────────────────────────────
-# STEP 4 — โหลด Options Chain เฉพาะที่เลือก
-# ─────────────────────────────────────────────
-def fetch_selected_options(stock, df_sel, S, r=RISK_FREE_RATE):
-    print(f"\n  กำลังโหลด Options Chain {len(df_sel)} expiry ...\n")
+# ── Fetch options chain ───────────────────────
+def fetch_options(stock, selected_dates, S, progress_bar, status_text):
     records = []
-    total   = len(df_sel)
+    r       = RISK_FREE_RATE
+    total   = len(selected_dates)
 
-    for i, (_, row) in enumerate(df_sel.iterrows(), 1):
-        exp  = row["date"]
-        T    = float(row["T"])
-        done = i / total
-        bar  = ("█" * i) + ("░" * (total - i))
-        print(f"  [{bar}] {done*100:5.0f}%  {exp}  ({int(row['days'])}d)", end="\r", flush=True)
+    for i, row in enumerate(selected_dates):
+        exp = row["date"]
+        T   = row["T"]
+        status_text.text(f"⏳ กำลังโหลด {exp}  ({int(row['days'])} วัน)  [{i+1}/{total}]")
+        progress_bar.progress((i + 1) / total)
 
         try:
             chain = stock.option_chain(exp)
-        except Exception as e:
-            print(f"\n  ! {exp}: {e}")
+        except Exception:
             continue
 
         for df_raw, otype in [(chain.calls, "call"), (chain.puts, "put")]:
             df = df_raw.copy()
             df["mid"]   = (df["bid"] + df["ask"]) / 2.0
             df["price"] = np.where(df["mid"] > 0, df["mid"], df["lastPrice"])
-
             mask = (
                 (df["bid"] >= MIN_BID) &
                 (df["volume"].fillna(0) >= MIN_VOLUME) &
                 (df["price"] > 0)
             )
             df = df[mask]
-
             for _, ropt in df.iterrows():
-                K    = float(ropt["strike"])
+                K     = float(ropt["strike"])
                 price = float(ropt["price"])
-                mono = np.log(K / S)
-                if not (MONEYNESS_MIN <= mono <= MONEYNESS_MAX):
-                    continue
+                mono  = np.log(K / S)
+                if not (MONEYNESS_MIN <= mono <= MONEYNESS_MAX): continue
                 iv_val = calc_iv(price, S, K, T, r, otype)
-                if np.isnan(iv_val):
-                    continue
+                if np.isnan(iv_val): continue
                 records.append({
                     "strike": K, "expiry": exp, "T": T,
-                    "days":   int(row["days"]),
+                    "days": int(row["days"]),
                     "moneyness": mono, "iv": iv_val, "type": otype,
-                    "bid":    float(ropt["bid"]),
-                    "ask":    float(ropt["ask"]),
+                    "bid": float(ropt["bid"]), "ask": float(ropt["ask"]),
                     "volume": int(ropt["volume"]) if not pd.isna(ropt["volume"]) else 0,
                 })
 
-    print(f"\n\n  IV points ที่คำนวณได้: {len(records):,}")
     return pd.DataFrame(records)
 
 
-# ─────────────────────────────────────────────
-# BUILD SURFACE
-# ─────────────────────────────────────────────
-def build_iv_surface(df):
+# ── Build surface ─────────────────────────────
+def build_surface(df):
     clean = []
     for _, grp in df.groupby("expiry"):
         q1, q3 = grp["iv"].quantile([0.05, 0.95])
@@ -297,72 +163,73 @@ def build_iv_surface(df):
     k_grid = np.linspace(MONEYNESS_MIN*0.9, MONEYNESS_MAX*0.9, GRID_NK)
     t_log  = np.linspace(np.log(df_c["T"].min()), np.log(df_c["T"].max()), GRID_NT)
     t_grid = np.exp(t_log)
-
     KK, TT = np.meshgrid(k_grid, t_grid)
-    pts    = df_c[["moneyness","T"]].values
-    vals   = df_c["iv"].values
-    surf   = griddata(pts, vals, (KK, TT), method="cubic")
-    near   = griddata(pts, vals, (KK, TT), method="nearest")
+
+    pts  = df_c[["moneyness","T"]].values
+    vals = df_c["iv"].values
+    surf = griddata(pts, vals, (KK, TT), method="cubic")
+    near = griddata(pts, vals, (KK, TT), method="nearest")
     surf[np.isnan(surf)] = near[np.isnan(surf)]
     return k_grid, t_grid, surf, df_c
 
 
-# ─────────────────────────────────────────────
-# PLOT
-# ─────────────────────────────────────────────
+# ── Plot ──────────────────────────────────────
+def fmt_T(t):
+    d = int(round(t * 365))
+    return f"{d}d" if d < 30 else (f"{d//30}M" if d < 365 else f"{d/365:.1f}Y")
+
+
 def plot_surface(k_grid, t_grid, iv_surface, df_raw, S, sym, name):
     mono_pct = np.exp(k_grid) * 100
-
-    def fmt_T(t):
-        d = int(round(t * 365))
-        return f"{d}d" if d < 30 else (f"{d//30}M" if d < 365 else f"{d/365:.1f}Y")
-
     t_labels = [fmt_T(t) for t in t_grid]
     KK, TT   = np.meshgrid(mono_pct, np.arange(len(t_grid)))
     single   = df_raw["T"].nunique() == 1
 
+    COLORS = [[0,"#143dd9"],[0.22,"#00b3cc"],[0.42,"#00cc4d"],
+              [0.62,"#d9d100"],[0.80,"#f25800"],[1.00,"#cc0018"]]
+
     if single:
         fig = go.Figure()
-        colors_type = np.where(df_raw["type"] == "put", "#e74c3c", "#3498db")
-        fig.add_trace(go.Scatter(
-            x=np.exp(df_raw["moneyness"]) * 100,
-            y=df_raw["iv"] * 100,
-            mode="markers",
-            marker=dict(size=6, color=list(colors_type)),
-            text=df_raw.apply(lambda r: f"K={r['strike']:.0f}  IV={r['iv']*100:.1f}%  {r['type']}", axis=1),
-            hoverinfo="text", name="Market quotes",
-        ))
-        t_mid  = int(len(t_grid) // 2)
-        smile  = iv_surface[t_mid, :] * 100
-        valid  = ~np.isnan(smile)
+        col_map = {"put": "#e74c3c", "call": "#3498db"}
+        for otype in ["put", "call"]:
+            sub = df_raw[df_raw["type"] == otype]
+            fig.add_trace(go.Scatter(
+                x=np.exp(sub["moneyness"]) * 100, y=sub["iv"] * 100,
+                mode="markers",
+                marker=dict(size=6, color=col_map[otype]),
+                name=otype,
+                text=sub.apply(lambda r: f"K={r['strike']:.0f}  IV={r['iv']*100:.1f}%", axis=1),
+                hoverinfo="text",
+            ))
+        t_mid = len(t_grid) // 2
+        smile = iv_surface[t_mid, :] * 100
+        valid = ~np.isnan(smile)
         fig.add_trace(go.Scatter(
             x=mono_pct[valid], y=smile[valid],
-            mode="lines", line=dict(color="#00e0ff", width=2),
-            name="Smile (interpolated)",
+            mode="lines", line=dict(color="#00e0ff", width=2.5),
+            name="Smile (fit)",
         ))
-        fig.add_vline(x=100, line=dict(color="white", dash="dot", width=1))
+        fig.add_vline(x=100, line=dict(color="rgba(255,255,255,0.4)", dash="dot", width=1))
         fig.update_layout(
             template="plotly_dark", paper_bgcolor="#080d1c", plot_bgcolor="#0d1425",
-            title=f"<b>IV Smile — {name}  Expiry: {df_raw['expiry'].iloc[0]}  Spot: {S:,.2f}</b>",
+            title=f"IV Smile — {name}   Expiry: {df_raw['expiry'].iloc[0]}   Spot: {S:,.2f}",
             xaxis_title="Moneyness (%)", yaxis_title="IV (%)",
-            font=dict(family="monospace", size=11, color="#c8d8f0"),
-            height=520, width=900,
+            font=dict(family="monospace", size=12, color="#c8d8f0"),
+            height=500,
         )
-
     else:
         fig = make_subplots(
             rows=1, cols=2,
             specs=[[{"type":"surface"},{"type":"scatter"}]],
-            column_widths=[0.70, 0.30],
+            column_widths=[0.68, 0.32],
             subplot_titles=[f"{sym} Implied Volatility Surface", "Smile by Expiry"],
         )
         fig.add_trace(go.Surface(
             x=KK, y=TT, z=iv_surface * 100,
-            colorscale=[[0,"#143dd9"],[0.22,"#00b3cc"],[0.42,"#00cc4d"],
-                        [0.62,"#d9d100"],[0.80,"#f25800"],[1.00,"#cc0018"]],
-            colorbar=dict(title="IV (%)", x=0.67, len=0.9, thickness=12),
-            opacity=0.92,
-            lighting=dict(ambient=0.7, diffuse=0.8, specular=0.3),
+            colorscale=COLORS,
+            colorbar=dict(title="IV (%)", x=0.65, len=0.85, thickness=12),
+            opacity=0.93,
+            lighting=dict(ambient=0.7, diffuse=0.85, specular=0.3),
             hovertemplate="Moneyness: %{x:.1f}%<br>IV: %{z:.1f}%<extra></extra>",
         ), row=1, col=1)
 
@@ -371,12 +238,13 @@ def plot_surface(k_grid, t_grid, iv_surface, df_raw, S, sym, name):
             y=[int(np.argmin(np.abs(t_grid - t))) for t in df_raw["T"]],
             z=df_raw["iv"] * 100,
             mode="markers",
-            marker=dict(size=2, color="rgba(255,255,255,0.3)"),
+            marker=dict(size=2, color="rgba(255,255,255,0.28)"),
             hovertemplate="M:%{x:.1f}%<br>IV:%{z:.1f}%<extra></extra>",
             showlegend=False,
         ), row=1, col=1)
 
-        clrs = ["#e74c3c","#e67e22","#f1c40f","#2ecc71","#3498db","#9b59b6","#1abc9c","#e91e63","#00bcd4","#ff5722"]
+        clrs = ["#e74c3c","#e67e22","#f1c40f","#2ecc71","#3498db",
+                "#9b59b6","#1abc9c","#e91e63","#00bcd4","#ff5722","#8bc34a","#ff9800"]
         for j, t_val in enumerate(sorted(df_raw["T"].unique())):
             t_idx = int(np.argmin(np.abs(t_grid - t_val)))
             smile = iv_surface[t_idx, :] * 100
@@ -388,9 +256,9 @@ def plot_surface(k_grid, t_grid, iv_surface, df_raw, S, sym, name):
                 hovertemplate="M:%{x:.1f}%<br>IV:%{y:.1f}%<extra></extra>",
             ), row=1, col=2)
 
-        fig.add_vline(x=100, line=dict(color="white", width=1, dash="dot"), row=1, col=2)
+        fig.add_vline(x=100, line=dict(color="rgba(255,255,255,0.3)", width=1, dash="dot"), row=1, col=2)
 
-        tick_idx = np.round(np.linspace(0, len(t_grid)-1, min(8, len(t_grid)))).astype(int)
+        tick_idx = np.round(np.linspace(0, len(t_grid)-1, min(7, len(t_grid)))).astype(int)
         fig.update_layout(
             scene=dict(
                 xaxis=dict(title="Moneyness (%)", gridcolor="#1a2540", color="#8aadee"),
@@ -401,96 +269,224 @@ def plot_surface(k_grid, t_grid, iv_surface, df_raw, S, sym, name):
                 zaxis=dict(title="IV (%)", gridcolor="#1a2540", color="#8aadee"),
                 bgcolor="#080d1c",
                 camera=dict(eye=dict(x=1.6, y=-1.8, z=1.0)),
-                aspectratio=dict(x=1.2, y=1.0, z=0.7),
+                aspectratio=dict(x=1.2, y=1.0, z=0.65),
             ),
         )
         fig.update_xaxes(title_text="Moneyness (%)", gridcolor="#1a2540", color="#8aadee", row=1, col=2)
         fig.update_yaxes(title_text="IV (%)", gridcolor="#1a2540", color="#8aadee", row=1, col=2)
+
         fig.update_layout(
             template="plotly_dark", paper_bgcolor="#080d1c", plot_bgcolor="#0d1425",
-            title=f"<b>IV Surface — {name}  Spot: {S:,.2f}  |  {datetime.now().strftime('%Y-%m-%d %H:%M')}</b>",
+            title=f"IV Surface — {name}   Spot: {S:,.2f}   {datetime.now().strftime('%Y-%m-%d %H:%M')}",
             font=dict(family="monospace", size=11, color="#c8d8f0"),
-            margin=dict(l=0, r=0, t=50, b=20),
+            margin=dict(l=0, r=0, t=50, b=10),
             legend=dict(bgcolor="rgba(0,0,0,0.5)", bordercolor="rgba(100,150,255,0.3)",
                         borderwidth=1, font=dict(size=10)),
-            height=660, width=1200,
+            height=640,
         )
 
     return fig
 
 
-# ─────────────────────────────────────────────
-# SUMMARY
-# ─────────────────────────────────────────────
-def print_summary(df, k_grid, t_grid, iv_surface, S):
-    atm_idx = int(np.argmin(np.abs(k_grid)))
-    print(f"\n  {'Expiry':>8}  {'Days':>5}  {'ATM IV':>8}  {'25d Skew':>10}")
-    print(f"  {'─'*38}")
-    for t_val in sorted(df["T"].unique()):
+# ═══════════════════════════════════════════════
+# STREAMLIT UI
+# ═══════════════════════════════════════════════
+st.title("📈 IV Surface — US Index Options")
+st.caption("ข้อมูลจาก Yahoo Finance · Black-Scholes Inversion · Plotly 3D")
+
+# ── Sidebar ───────────────────────────────────
+with st.sidebar:
+    st.header("⚙️ การตั้งค่า")
+
+    # 1. เลือก Underlying
+    st.subheader("1️⃣ Underlying")
+    ticker_label = st.selectbox("เลือก Index / ETF", list(TICKERS.keys()), index=0)
+    sym  = TICKERS[ticker_label]
+    name = ticker_label.split("—")[-1].strip()
+
+    st.divider()
+
+    # 2. โหลด expiry list
+    st.subheader("2️⃣ โหลด Expiry List")
+    load_list_btn = st.button("🔄 โหลดรายการ Expiry", use_container_width=True)
+
+    if load_list_btn or "df_exp" not in st.session_state or st.session_state.get("sym") != sym:
+        with st.spinner("กำลังโหลด expiry list ..."):
+            df_exp, S, stock = fetch_expiry_list(sym)
+        if df_exp is None or df_exp.empty:
+            st.error("โหลดข้อมูลไม่ได้ — ตรวจสอบ internet")
+            st.stop()
+        st.session_state["df_exp"] = df_exp
+        st.session_state["S"]      = S
+        st.session_state["stock"]  = stock
+        st.session_state["sym"]    = sym
+        st.success(f"พบ {len(df_exp)} expiry dates")
+
+    st.divider()
+
+    # 3. เลือก Expiry
+    st.subheader("3️⃣ เลือก Expiry")
+
+    if "df_exp" in st.session_state:
+        df_exp = st.session_state["df_exp"]
+
+        mode = st.radio("โหมด", [
+            "🗓️ เลือก 1 วัน",
+            "📅 ช่วงวัน (range)",
+            "⭐ Preset",
+            "✏️ เลือกเองหลายวัน",
+        ], index=1)
+
+        selected_rows = []
+
+        # ── Mode A: Single ─────────────────────
+        if mode == "🗓️ เลือก 1 วัน":
+            date_options = df_exp["date"].tolist()
+            chosen = st.selectbox("เลือก Expiry Date", date_options, index=min(3, len(date_options)-1))
+            row = df_exp[df_exp["date"] == chosen].iloc[0]
+            selected_rows = [row.to_dict()]
+            st.info(f"Expiry: **{chosen}**  ({int(row['days'])} วัน)")
+
+        # ── Mode B: Range ──────────────────────
+        elif mode == "📅 ช่วงวัน (range)":
+            d_min = st.slider("วันเริ่มต้น (days)", 1, 30, 7)
+            d_max = st.slider("วันสิ้นสุด (days)", 30, 730, 365)
+            n_max = st.slider("จำนวน Expiry สูงสุด", 2, 20, 8)
+            filtered = df_exp[(df_exp["days"] >= d_min) & (df_exp["days"] <= d_max)]
+            if filtered.empty:
+                st.warning("ไม่มี expiry ในช่วงนี้")
+            else:
+                if len(filtered) > n_max:
+                    log_idx = np.round(np.linspace(0, len(filtered)-1, n_max)).astype(int)
+                    filtered = filtered.iloc[log_idx]
+                selected_rows = filtered.to_dict("records")
+                st.success(f"เลือก {len(selected_rows)} expiry")
+                for r in selected_rows:
+                    st.caption(f"• {r['date']}  ({int(r['days'])} วัน)")
+
+        # ── Mode C: Preset ─────────────────────
+        elif mode == "⭐ Preset":
+            PRESETS = {
+                "Short-term  1W→1Y":  [7, 14, 30, 60, 90, 180, 365],
+                "Near-term   1W→3M":  [7, 14, 21, 30, 45, 60, 90],
+                "Medium-term 1M→2Y":  [30, 60, 90, 180, 365, 730],
+                "Long-term   3M→2Y":  [90, 180, 270, 365, 540, 730],
+                "Sparse 4pts 1W/1M/3M/1Y": [7, 30, 90, 365],
+            }
+            preset_name = st.selectbox("เลือก Preset", list(PRESETS.keys()))
+            targets     = PRESETS[preset_name]
+            rows = []
+            for t in targets:
+                sub = df_exp[(df_exp["days"] - t).abs() == (df_exp["days"] - t).abs().min()]
+                if not sub.empty:
+                    rows.append(sub.iloc[0].to_dict())
+            seen = set()
+            selected_rows = [r for r in rows if not (r["date"] in seen or seen.add(r["date"]))]
+            st.success(f"เลือก {len(selected_rows)} expiry")
+            for r in selected_rows:
+                st.caption(f"• {r['date']}  ({int(r['days'])} วัน)")
+
+        # ── Mode D: Manual ─────────────────────
+        elif mode == "✏️ เลือกเองหลายวัน":
+            date_options = df_exp["date"].tolist()
+            chosen_many  = st.multiselect(
+                "เลือก Expiry Dates",
+                date_options,
+                default=date_options[:min(6, len(date_options))],
+            )
+            selected_rows = df_exp[df_exp["date"].isin(chosen_many)].to_dict("records")
+            st.success(f"เลือก {len(selected_rows)} expiry")
+
+        st.divider()
+
+        # 4. โหลดข้อมูล + คำนวณ
+        st.subheader("4️⃣ โหลดข้อมูลจริง")
+        st.write(f"จะโหลด **{len(selected_rows)} expiry** — ใช้เวลาประมาณ {len(selected_rows)*3}–{len(selected_rows)*6} วินาที")
+        run_btn = st.button("🚀 โหลดและคำนวณ IV Surface", type="primary", use_container_width=True)
+
+# ── Main area ─────────────────────────────────
+if "df_exp" not in st.session_state:
+    st.info("👈 กด **โหลดรายการ Expiry** ใน Sidebar ก่อน")
+    st.stop()
+
+S = st.session_state["S"]
+
+# Spot price display
+col1, col2, col3 = st.columns(3)
+col1.metric("Underlying", sym)
+col2.metric("Spot Price", f"{S:,.2f}")
+col3.metric("Risk-Free Rate", f"{RISK_FREE_RATE*100:.1f}%")
+
+# Run calculation
+if "run_btn" in dir() and run_btn and selected_rows:
+    stock = st.session_state["stock"]
+
+    st.subheader("⏳ กำลังโหลดข้อมูล ...")
+    prog_bar   = st.progress(0)
+    status_txt = st.empty()
+
+    df_iv = fetch_options(stock, selected_rows, S, prog_bar, status_txt)
+
+    prog_bar.empty()
+    status_txt.empty()
+
+    if df_iv.empty:
+        st.error("❌ ไม่ได้ข้อมูล — ลองเปลี่ยน expiry หรือตรวจ internet")
+        st.stop()
+
+    with st.spinner("Interpolating surface ..."):
+        k_grid, t_grid, iv_surface, df_clean = build_surface(df_iv)
+
+    st.success(f"✅ คำนวณเสร็จ — IV points: {len(df_iv):,}  |  Expiry: {df_iv['T'].nunique()}")
+
+    # ── Summary metrics ──
+    st.subheader("📊 Summary")
+    atm_idx   = int(np.argmin(np.abs(k_grid)))
+    sorted_Ts = sorted(df_clean["T"].unique())
+
+    metric_cols = st.columns(min(len(sorted_Ts), 6))
+    for j, t_val in enumerate(sorted_Ts[:6]):
         t_idx  = int(np.argmin(np.abs(t_grid - t_val)))
         atm_iv = iv_surface[t_idx, atm_idx]
-        if np.isnan(atm_iv):
-            continue
         p_idx  = int(np.argmin(np.abs(k_grid - (-0.10))))
         put_iv = iv_surface[t_idx, p_idx]
-        skew   = (put_iv - atm_iv) if not np.isnan(put_iv) else np.nan
-        days   = int(round(t_val * 365))
-        lbl    = _fmt_lbl(days)
-        sk_str = f"{skew*100:+.1f}%" if not np.isnan(skew) else "N/A"
-        print(f"  {lbl:>8}  {days:>5}  {atm_iv*100:>7.1f}%  {sk_str:>10}")
-    print(f"\n  IV points  : {len(df):,}")
-    print(f"  IV range   : {df['iv'].min()*100:.1f}% – {df['iv'].max()*100:.1f}%")
+        skew   = put_iv - atm_iv if not np.isnan(put_iv) else np.nan
+        lbl    = fmt_T(t_val)
+        with metric_cols[j]:
+            st.markdown(f"""
+            <div class="metric-card">
+              <div class="metric-label">{lbl} ATM</div>
+              <div class="metric-value">{atm_iv*100:.1f}%</div>
+              <div class="metric-label">Skew: {f"{skew*100:+.1f}%" if not np.isnan(skew) else "N/A"}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-
-def _fmt_lbl(days):
-    if days < 30:    return f"{days}d"
-    elif days < 365: return f"{days//30}M"
-    else:            return f"{days/365:.1f}Y"
-
-
-# ─────────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────────
-def main():
-    # 1. เลือก Underlying
-    sym, name = select_ticker()
-
-    # 2. โหลดรายการ Expiry (รวดเร็ว ไม่โหลด chain)
-    df_exp, S, stock = fetch_expiry_list(sym)
-
-    # 3. User เลือก Expiry
-    df_sel = select_expiries(df_exp)
-    if df_sel.empty:
-        print("  ไม่ได้เลือก expiry"); return
-
-    confirm = input(f"\n  ยืนยันโหลด {len(df_sel)} expiry? (y/n, default=y): ").strip().lower()
-    if confirm == "n":
-        print("  ยกเลิก"); return
-
-    # 4. โหลด Options Chain เฉพาะที่เลือก
-    df_iv = fetch_selected_options(stock, df_sel, S)
-    if df_iv.empty:
-        print("\n  ERROR: ไม่ได้ข้อมูล — ตรวจสอบ internet หรือเลือก expiry ใหม่"); return
-
-    # 5. Build Surface
-    print("  Interpolating surface ...", end=" ", flush=True)
-    k_grid, t_grid, iv_surface, df_clean = build_iv_surface(df_iv)
-    print("done")
-
-    # 6. Summary
-    print_summary(df_clean, k_grid, t_grid, iv_surface, S)
-
-    # 7. Plot & save
-    print("\n  Generating chart ...", end=" ", flush=True)
+    # ── Chart ──
+    st.subheader("📈 IV Surface / Smile")
     fig = plot_surface(k_grid, t_grid, iv_surface, df_clean, S, sym, name)
-    print("done")
+    st.plotly_chart(fig, use_container_width=True)
 
-    out = f"iv_surface_{sym.replace('^','')}_{datetime.now().strftime('%Y%m%d_%H%M')}.html"
-    fig.write_html(out, include_plotlyjs="cdn")
-    print(f"\n  Saved: {out}")
-    print(f"  เปิดไฟล์ใน Browser เพื่อดู 3D Surface\n")
-    fig.show()
+    # ── Raw data table ──
+    with st.expander("📋 ดู Raw Data"):
+        st.dataframe(
+            df_iv[["expiry","type","strike","moneyness","iv","bid","ask","volume"]]
+            .assign(
+                moneyness=lambda x: x["moneyness"].round(4),
+                iv=lambda x: (x["iv"]*100).round(2),
+            )
+            .rename(columns={"iv": "IV (%)", "moneyness": "log(K/S)"}),
+            use_container_width=True,
+        )
 
+    # ── Download ──
+    fig_html = fig.to_html(include_plotlyjs="cdn")
+    st.download_button(
+        label="⬇️ Download IV Surface (HTML)",
+        data=fig_html,
+        file_name=f"iv_surface_{sym.replace('^','')}_{datetime.now().strftime('%Y%m%d_%H%M')}.html",
+        mime="text/html",
+        use_container_width=True,
+    )
 
-if __name__ == "__main__":
-    main()
+elif "df_exp" in st.session_state:
+    st.info("👈 เลือก Expiry แล้วกด **โหลดและคำนวณ IV Surface**")
