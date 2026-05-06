@@ -548,6 +548,12 @@ with st.sidebar:
 
         st.divider()
         st.subheader("4️⃣ แสดงผล")
+        x_mode = st.radio(
+            "แกน X",
+            ["moneyness", "strike"],
+            horizontal=True,
+            help="moneyness = K/S%  |  strike = ราคา strike จริง",
+        )
         run_btn = st.button(
             "🚀 สร้าง IV Surface",
             type="primary",
@@ -590,7 +596,22 @@ if "run_btn" in dir() and run_btn and selected_dates:
         st.error("ข้อมูลไม่เพียงพอ — ลองเพิ่ม expiry")
         st.stop()
 
+    # บันทึกไว้ใน session_state เพื่อไม่ให้หายเมื่อ toggle x_mode
+    st.session_state["k_grid"]     = k_grid
+    st.session_state["t_grid"]     = t_grid
+    st.session_state["iv_surface"] = iv_surface
+    st.session_state["df_clean"]   = df_clean
+    st.session_state["df_sel"]     = df_sel
     st.success(f"✅ IV points: {len(df_sel):,}  |  Expiry: {df_sel['T'].nunique()}  |  Strike range: {df_sel['strike'].min():.0f}–{df_sel['strike'].max():.0f}")
+
+# ── แสดงผลจาก session_state (ไม่หายเมื่อ toggle x_mode) ──
+if "iv_surface" in st.session_state:
+    k_grid     = st.session_state["k_grid"]
+    t_grid     = st.session_state["t_grid"]
+    iv_surface = st.session_state["iv_surface"]
+    df_clean   = st.session_state["df_clean"]
+    df_sel     = st.session_state["df_sel"]
+    x_mode_cur = st.session_state.get("x_mode_cur", "moneyness")
 
     # ── Metric cards ──
     st.subheader("📊 ATM Implied Volatility")
@@ -614,12 +635,10 @@ if "run_btn" in dir() and run_btn and selected_dates:
             </div>
             """, unsafe_allow_html=True)
 
-    # ── Chart ──
+    # ── Chart ── อ่าน x_mode จาก sidebar (ที่ defined แล้ว)
     st.subheader("📈 IV Surface")
-    col_xa, col_xb = st.columns([1, 4])
-    x_mode = col_xa.radio("แกน X", ["moneyness", "strike"], horizontal=True,
-                           help="moneyness = K/S%  |  strike = ราคา strike จริง")
-    fig = plot_surface(k_grid, t_grid, iv_surface, df_clean, S, sym, name, x_mode=x_mode)
+    cur_x = x_mode if "x_mode" in dir() else x_mode_cur
+    fig = plot_surface(k_grid, t_grid, iv_surface, df_clean, S, sym, name, x_mode=cur_x)
     st.plotly_chart(fig, use_container_width=True)
 
     # ── Raw data ──
