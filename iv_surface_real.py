@@ -287,7 +287,9 @@ def plot_surface(k_grid, t_grid, iv_surface, df_raw, S, sym, name):
             x=mono_pct[valid], y=smile[valid],
             mode="lines", line=dict(color="#00e0ff", width=2.5), name="Smile fit",
         ))
-        fig.add_vline(x=100, line=dict(color="rgba(255,255,255,0.4)", dash="dot", width=1))
+        fig.add_shape(type="line", x0=100, x1=100, y0=0, y1=1,
+                      xref="x", yref="paper",
+                      line=dict(color="rgba(255,255,255,0.4)", dash="dot", width=1))
         fig.update_layout(
             template="plotly_dark", paper_bgcolor="#080d1c", plot_bgcolor="#0d1425",
             title=f"IV Smile — {name}  Expiry: {df_raw['expiry'].iloc[0]}  Spot: {S:,.2f}",
@@ -335,7 +337,16 @@ def plot_surface(k_grid, t_grid, iv_surface, df_raw, S, sym, name):
             hovertemplate="M:%{x:.1f}%<br>IV:%{y:.1f}%<extra></extra>",
         ), row=1, col=2)
 
-    fig.add_vline(x=100, line=dict(color="rgba(255,255,255,0.3)", width=1, dash="dot"), row=1, col=2)
+    # ATM line (add_vline ใช้ไม่ได้กับ mixed 3D subplot → ใช้ scatter แทน)
+    y_min = float(np.nanmin(iv_surface) * 100)
+    y_max = float(np.nanmax(iv_surface) * 100)
+    fig.add_trace(go.Scatter(
+        x=[100, 100], y=[y_min, y_max],
+        mode="lines",
+        line=dict(color="rgba(255,255,255,0.35)", width=1, dash="dot"),
+        name="ATM", showlegend=False,
+        hoverinfo="skip",
+    ), row=1, col=2)
 
     tick_idx = np.round(np.linspace(0, len(t_grid)-1, min(7, len(t_grid)))).astype(int)
     fig.update_layout(
