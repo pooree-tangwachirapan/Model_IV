@@ -202,8 +202,17 @@ def parse_options(df_raw: pd.DataFrame, S: float) -> pd.DataFrame:
     df["days"]      = (df["T"] * 365).round().astype(int)
     df["moneyness"] = np.log(df["strike"] / S)
 
-    # ── 8. filter ──
+    # ── 8. OTM filter (มาตรฐาน IV Surface) ──
+    # OTM Put  = K < S  → moneyness < 0
+    # OTM Call = K > S  → moneyness > 0
+    # ATM      = K ≈ S  → |moneyness| <= 0.01  (รับทั้งคู่)
+    otm_mask = (
+        ((df["type"] == "put")  & (df["moneyness"] <= 0.01)) |
+        ((df["type"] == "call") & (df["moneyness"] >= -0.01))
+    )
+
     df = df[
+        otm_mask &
         (df["iv"] > 0.001) & (df["iv"] < 5.0) &
         (df["days"] > 0) &
         (df["moneyness"] >= MONEYNESS_MIN) &
