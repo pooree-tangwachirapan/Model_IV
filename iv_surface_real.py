@@ -213,11 +213,12 @@ def parse_options(df_raw: pd.DataFrame, S: float) -> pd.DataFrame:
 
     df = df[
         otm_mask &
-        (df["iv"] > 0.001) & (df["iv"] < 5.0) &
+        (df["iv"] > 0.005) & (df["iv"] < 5.0) &   # IV ต้องมากกว่า 0.5%
         (df["days"] > 0) &
         (df["moneyness"] >= MONEYNESS_MIN) &
         (df["moneyness"] <= MONEYNESS_MAX) &
-        (df["bid"] > 0)
+        (df["bid"] >= 0.05) &                        # bid ต้องมีนัยสำคัญ
+        (df["ask"] > df["bid"])                      # spread ต้องสมเหตุสมผล
     ].dropna(subset=["strike", "iv", "expiry", "type"])
 
     return df.reset_index(drop=True)
@@ -259,7 +260,7 @@ def build_surface(df: pd.DataFrame):
         kind   = "cubic" if len(k_pts) >= 4 else "linear"
         f      = interp1d(k_pts, iv_pts, kind=kind,
                           bounds_error=False, fill_value=(iv_pts[0], iv_pts[-1]))
-        surf   = f(k_grid).reshape(1, -1)
+        surf   = np.clip(f(k_grid), 0.005, 5.0).reshape(1, -1)
         return k_grid, t_grid, surf, df_c
 
     # ── Multi-expiry: 2D griddata ─────────────────
@@ -271,6 +272,7 @@ def build_surface(df: pd.DataFrame):
     surf   = griddata(pts, vals, (KK, TT), method="cubic")
     near   = griddata(pts, vals, (KK, TT), method="nearest")
     surf[np.isnan(surf)] = near[np.isnan(surf)]
+    surf   = np.clip(surf, 0.005, 5.0)   # IV ต้องไม่ต่ำกว่า 0.5% และไม่เกิน 500%
     return k_grid, t_grid, surf, df_c
 
 
