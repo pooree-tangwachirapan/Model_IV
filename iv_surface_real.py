@@ -96,44 +96,113 @@ def cboe_fetch_all(sym: str) -> tuple[pd.DataFrame, float]:
 def parse_options(df_raw: pd.DataFrame, S: float) -> pd.DataFrame:
     """
     แปลง raw CBOE data → DataFrame พร้อมใช้
-    CBOE columns: option, bid, ask, iv, expiration, strike, option_type
+    รองรับ column ชื่อต่างๆ ที่ CBOE ส่งมา
     """
     df = df_raw.copy()
 
-    # rename columns ให้สม่ำเสมอ
-    rename = {
-        "expiration":  "expiry",
-        "option_type": "type",
-        "iv":          "iv_raw",
-    }
-    df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
+    # ── 1. debug: แสดง columns จริงใน session_state ──
+    st.session_state["cboe_columns"] = list(df.columns)
 
-    # แปลง type: C → call, P → put
-    if "type" in df.columns:
-        df["type"] = df["type"].map({"C": "call", "P": "put", "call": "call", "put": "put"})
+    # ── 2. หา expiry column ──
+    expiry_candidates = ["expiration", "expiry", "exp_date", "ExpirationDate",
+                         "expiration_date", "Expiration"]
+    expiry_col = next((c for c in expiry_candidates if c in df.columns), None)
 
-    df["strike"] = pd.to_numeric(df.get("strike", np.nan), errors="coerce")
-    df["bid"]    = pd.to_numeric(df.get("bid",    0),     errors="coerce").fillna(0)
-    df["ask"]    = pd.to_numeric(df.get("ask",    0),     errors="coerce").fillna(0)
-    df["volume"] = pd.to_numeric(df.get("volume", 0),     errors="coerce").fillna(0).astype(int)
-    df["iv"]     = pd.to_numeric(df.get("iv_raw", np.nan), errors="coerce")
+    # ถ้าไม่เจอ ลองหาจาก option symbol เช่น "SPY251219C00500000"
+    if expiry_col is None:
+        sym_col = next((c for c in ["option", "symbol", "Symbol"] if c in df.columns), None)
+        if sym_col:
+            # parse expiry จาก OCC symbol format: SYM + YYMMDD + C/P + strike*1000
+            def extract_exp(s):
+                try:
+                    s = str(s)
+                    # ค้นหา 6 ตัวเลขที่เป็น date
+                    import re
+                    m = re.search(r'(\d{6})[CP]', s)
+                    if m:
+                        yymmdd = m.group(1)
+                        return f"20{yymmdd[:2]}-{yymmdd[2:4]}-{yymmdd[4:6]}"
+                except Exception:
+                    pass
+                return None
+            df["expiry"] = df[sym_col].apply(extract_exp)
+            expiry_col   = "expiry"
+        else:
+            st.error(f"ไม่พบ expiry column  columns ที่มี: {list(df.columns)}")
+            return pd.DataFrame()
 
-    # CBOE IV อาจเป็น 0-1 หรือ 0-100 → normalize เป็น 0-1
-    if df["iv"].max() > 5:
-        df["iv"] = df["iv"] / 100.0
+    df["expiry"] = df[expiry_col].astype(str).str[:10]
 
-    # expiry → T (years)
+    # ── 3. หา option_type column ──
+    type_candidates = ["option_type", "type", "Type", "OptionType", "call_put", "cp_flag"]
+    type_col = next((c for c in type_candidates if c in df.columns), None)
+
+    if type_col is None:
+        # parse จาก OCC symbol
+        sym_col = next((c for c in ["option", "symbol", "Symbol"] if c in df.columns), None)
+        if sym_col:
+            import re
+            def extract_type(s):
+                m = re.search(r'\d{6}([CP])', str(s))
+                return "call" if m and m.group(1) == "C" else "put" if m else None
+            df["type"] = df[sym_col].apply(extract_type)
+        else:
+            df["type"] = "call"   # fallback
+    else:
+        df["type"] = df[type_col].map({
+            "C": "call", "P": "put", "c": "call", "p": "put",
+            "call": "call", "put": "put", "CALL": "call", "PUT": "put",
+        })
+
+    # ── 4. หา strike column ──
+    strike_col = next((c for c in ["strike", "Strike", "strike_price", "StrikePrice"] if c in df.columns), None)
+    if strike_col is None:
+        # parse จาก OCC symbol: last 8 digits / 1000
+        sym_col = next((c for c in ["option", "symbol", "Symbol"] if c in df.columns), None)
+        if sym_col:
+            import re
+            def extract_strike(s):
+                m = re.search(r'[CP](\d{8})$', str(s))
+                return float(m.group(1)) / 1000.0 if m else np.nan
+            df["strike"] = df[sym_col].apply(extract_strike)
+        else:
+            return pd.DataFrame()
+    else:
+        df["strike"] = pd.to_numeric(df[strike_col], errors="coerce")
+
+    # ── 5. bid / ask / volume ──
+    def safe_col(df, candidates, default=0):
+        col = next((c for c in candidates if c in df.columns), None)
+        if col:
+            return pd.to_numeric(df[col], errors="coerce").fillna(default)
+        return pd.Series(default, index=df.index)
+
+    df["bid"]    = safe_col(df, ["bid", "Bid", "bid_price"])
+    df["ask"]    = safe_col(df, ["ask", "Ask", "ask_price"])
+    df["volume"] = safe_col(df, ["volume", "Volume", "vol"], 0).astype(int)
+
+    # ── 6. IV ──
+    iv_col = next((c for c in ["iv", "IV", "implied_volatility", "impliedVolatility",
+                                "ImpliedVolatility", "theo_volatility"] if c in df.columns), None)
+    if iv_col:
+        df["iv"] = pd.to_numeric(df[iv_col], errors="coerce")
+        # normalize: ถ้า > 5 แสดงว่าเป็น % → หาร 100
+        if df["iv"].dropna().max() > 5:
+            df["iv"] = df["iv"] / 100.0
+    else:
+        st.warning("ไม่พบ IV column — จะใช้ค่า 0 (ต้องคำนวณเอง)")
+        df["iv"] = np.nan
+
+    # ── 7. คำนวณ T, moneyness ──
     today = datetime.now()
-    df["expiry"] = df["expiry"].astype(str)
-    df["T"]    = df["expiry"].apply(
+    df["T"] = df["expiry"].apply(
         lambda x: max((datetime.strptime(x[:10], "%Y-%m-%d") - today).days, 0) / 365.0
+        if len(x) >= 10 else 0
     )
-    df["days"] = (df["T"] * 365).round().astype(int)
-
-    # moneyness = log(K/S)
+    df["days"]      = (df["T"] * 365).round().astype(int)
     df["moneyness"] = np.log(df["strike"] / S)
 
-    # filter
+    # ── 8. filter ──
     df = df[
         (df["iv"] > 0.001) & (df["iv"] < 5.0) &
         (df["days"] > 0) &
@@ -441,6 +510,11 @@ with st.sidebar:
 if "S" not in st.session_state:
     st.info("👈 กด **โหลดข้อมูล** ใน Sidebar เพื่อเริ่ม")
     st.stop()
+
+# Debug: แสดง CBOE columns จริงที่ได้รับ
+if "cboe_columns" in st.session_state:
+    with st.expander("🔍 Debug: CBOE columns จริง (ดูเพื่อ troubleshoot)", expanded=False):
+        st.code(", ".join(st.session_state["cboe_columns"]))
 
 S = st.session_state["S"]
 c1, c2, c3, c4 = st.columns(4)
