@@ -280,10 +280,28 @@ LINE_COLORS = ["#e74c3c","#e67e22","#f1c40f","#2ecc71","#3498db",
 
 
 # ── Plot ──────────────────────────────────────
-def plot_surface(k_grid, t_grid, iv_surface, df_raw, S, sym, name):
-    mono_pct = np.exp(k_grid) * 100
+def plot_surface(k_grid, t_grid, iv_surface, df_raw, S, sym, name, x_mode="moneyness"):
+    """
+    x_mode = "moneyness" → X แสดงเป็น Moneyness % (K/S * 100)
+    x_mode = "strike"    → X แสดงเป็น Strike Price จริง
+    Model ไม่ถูกแตะเลย — แค่แปลง x-axis ตอน plot
+    """
+    # ── x-axis values & labels ──
+    if x_mode == "strike":
+        x_grid    = np.exp(k_grid) * S          # moneyness → strike จริง
+        x_scatter = df_raw["strike"]
+        x_atm     = S                            # ATM line ที่ spot price
+        x_title   = f"Strike Price  (Spot={S:,.0f})"
+        x_hover   = "Strike: %{x:,.0f}"
+    else:
+        x_grid    = np.exp(k_grid) * 100        # moneyness → %
+        x_scatter = np.exp(df_raw["moneyness"]) * 100
+        x_atm     = 100.0                        # ATM line ที่ 100%
+        x_title   = "Moneyness  K/S (%)"
+        x_hover   = "Moneyness: %{x:.1f}%"
+
     t_labels = [fmt_T(t) for t in t_grid]
-    KK, TT   = np.meshgrid(mono_pct, np.arange(len(t_grid)))
+    KK, TT   = np.meshgrid(x_grid, np.arange(len(t_grid)))
     single   = df_raw["T"].nunique() == 1
 
     if single:
@@ -291,7 +309,7 @@ def plot_surface(k_grid, t_grid, iv_surface, df_raw, S, sym, name):
         for otype, col in [("put", "#e74c3c"), ("call", "#3498db")]:
             sub = df_raw[df_raw["type"] == otype]
             fig.add_trace(go.Scatter(
-                x=np.exp(sub["moneyness"]) * 100,
+                x=sub["strike"] if x_mode == "strike" else np.exp(sub["moneyness"]) * 100,
                 y=sub["iv"] * 100,
                 mode="markers",
                 marker=dict(size=6, color=col),
@@ -304,16 +322,16 @@ def plot_surface(k_grid, t_grid, iv_surface, df_raw, S, sym, name):
         smile = iv_surface[t_mid, :] * 100
         valid = ~np.isnan(smile)
         fig.add_trace(go.Scatter(
-            x=mono_pct[valid], y=smile[valid],
+            x=x_grid[valid], y=smile[valid],
             mode="lines", line=dict(color="#00e0ff", width=2.5), name="Smile fit",
         ))
-        fig.add_shape(type="line", x0=100, x1=100, y0=0, y1=1,
+        fig.add_shape(type="line", x0=x_atm, x1=x_atm, y0=0, y1=1,
                       xref="x", yref="paper",
                       line=dict(color="rgba(255,255,255,0.4)", dash="dot", width=1))
         fig.update_layout(
             template="plotly_dark", paper_bgcolor="#080d1c", plot_bgcolor="#0d1425",
             title=f"IV Smile — {name}  Expiry: {df_raw['expiry'].iloc[0]}  Spot: {S:,.2f}",
-            xaxis_title="Moneyness (%)", yaxis_title="Implied Volatility (%)",
+            xaxis_title=x_title, yaxis_title="Implied Volatility (%)",
             font=dict(family="monospace", size=12, color="#c8d8f0"),
             height=520,
         )
@@ -333,11 +351,11 @@ def plot_surface(k_grid, t_grid, iv_surface, df_raw, S, sym, name):
         colorbar=dict(title="IV (%)", x=0.63, len=0.85, thickness=12),
         opacity=0.93,
         lighting=dict(ambient=0.7, diffuse=0.85, specular=0.3),
-        hovertemplate="Moneyness: %{x:.1f}%<br>IV: %{z:.1f}%<extra></extra>",
+        hovertemplate=f"{x_hover}<br>IV: %{{z:.1f}}%<extra></extra>",
     ), row=1, col=1)
 
     fig.add_trace(go.Scatter3d(
-        x=np.exp(df_raw["moneyness"]) * 100,
+        x=df_raw["strike"] if x_mode == "strike" else np.exp(df_raw["moneyness"]) * 100,
         y=[int(np.argmin(np.abs(t_grid - t))) for t in df_raw["T"]],
         z=df_raw["iv"] * 100,
         mode="markers",
@@ -351,7 +369,7 @@ def plot_surface(k_grid, t_grid, iv_surface, df_raw, S, sym, name):
         smile = iv_surface[t_idx, :] * 100
         valid = ~np.isnan(smile)
         fig.add_trace(go.Scatter(
-            x=mono_pct[valid], y=smile[valid],
+            x=x_grid[valid], y=smile[valid],
             mode="lines", name=fmt_T(t_val),
             line=dict(color=LINE_COLORS[j % len(LINE_COLORS)], width=2),
             hovertemplate="M:%{x:.1f}%<br>IV:%{y:.1f}%<extra></extra>",
@@ -361,7 +379,7 @@ def plot_surface(k_grid, t_grid, iv_surface, df_raw, S, sym, name):
     y_min = float(np.nanmin(iv_surface) * 100)
     y_max = float(np.nanmax(iv_surface) * 100)
     fig.add_trace(go.Scatter(
-        x=[100, 100], y=[y_min, y_max],
+        x=[x_atm, x_atm], y=[y_min, y_max],
         mode="lines",
         line=dict(color="rgba(255,255,255,0.35)", width=1, dash="dot"),
         name="ATM", showlegend=False,
@@ -371,7 +389,7 @@ def plot_surface(k_grid, t_grid, iv_surface, df_raw, S, sym, name):
     tick_idx = np.round(np.linspace(0, len(t_grid)-1, min(7, len(t_grid)))).astype(int)
     fig.update_layout(
         scene=dict(
-            xaxis=dict(title="Moneyness (%)", gridcolor="#1a2540", color="#8aadee"),
+            xaxis=dict(title=x_title, gridcolor="#1a2540", color="#8aadee"),
             yaxis=dict(title="Expiry",
                        tickvals=list(tick_idx),
                        ticktext=[t_labels[i] for i in tick_idx],
@@ -382,7 +400,7 @@ def plot_surface(k_grid, t_grid, iv_surface, df_raw, S, sym, name):
             aspectratio=dict(x=1.2, y=1.0, z=0.65),
         ),
     )
-    fig.update_xaxes(title_text="Moneyness (%)", gridcolor="#1a2540", color="#8aadee", row=1, col=2)
+    fig.update_xaxes(title_text=x_title, gridcolor="#1a2540", color="#8aadee", row=1, col=2)
     fig.update_yaxes(title_text="IV (%)",         gridcolor="#1a2540", color="#8aadee", row=1, col=2)
     fig.update_layout(
         template="plotly_dark", paper_bgcolor="#080d1c", plot_bgcolor="#0d1425",
@@ -598,7 +616,10 @@ if "run_btn" in dir() and run_btn and selected_dates:
 
     # ── Chart ──
     st.subheader("📈 IV Surface")
-    fig = plot_surface(k_grid, t_grid, iv_surface, df_clean, S, sym, name)
+    col_xa, col_xb = st.columns([1, 4])
+    x_mode = col_xa.radio("แกน X", ["moneyness", "strike"], horizontal=True,
+                           help="moneyness = K/S%  |  strike = ราคา strike จริง")
+    fig = plot_surface(k_grid, t_grid, iv_surface, df_clean, S, sym, name, x_mode=x_mode)
     st.plotly_chart(fig, use_container_width=True)
 
     # ── Raw data ──
