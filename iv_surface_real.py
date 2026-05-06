@@ -240,8 +240,13 @@ def build_surface(df: pd.DataFrame):
         T_val  = float(df_c["T"].iloc[0])
         t_grid = np.array([T_val])
         grp    = df_c.sort_values("moneyness")
+        # deduplicate: ถ้า strike เดียวกัน (call+put) ให้ average IV
+        grp    = grp.groupby("moneyness", as_index=False)["iv"].mean()
+        grp    = grp.sort_values("moneyness")
         k_pts  = grp["moneyness"].values
         iv_pts = grp["iv"].values
+        if len(k_pts) < 2:
+            return None, None, None, df_c
         kind   = "cubic" if len(k_pts) >= 4 else "linear"
         f      = interp1d(k_pts, iv_pts, kind=kind,
                           bounds_error=False, fill_value=(iv_pts[0], iv_pts[-1]))
