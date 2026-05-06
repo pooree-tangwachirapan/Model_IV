@@ -216,12 +216,14 @@ def parse_options(df_raw: pd.DataFrame, S: float) -> pd.DataFrame:
 
 # ── Build surface ─────────────────────────────
 def build_surface(df: pd.DataFrame):
+    from scipy.interpolate import interp1d
+
     clean = []
     for _, grp in df.groupby("expiry"):
-        if len(grp) < 4:
+        if len(grp) < 3:
             continue
-        q1, q3 = grp["iv"].quantile([0.05, 0.95])
-        iqr    = q3 - q1
+        q1, q3  = grp["iv"].quantile([0.05, 0.95])
+        iqr     = q3 - q1
         filtered = grp[(grp["iv"] >= q1 - 1.5*iqr) & (grp["iv"] <= q3 + 1.5*iqr)]
         if len(filtered) >= 3:
             clean.append(filtered)
@@ -232,15 +234,28 @@ def build_surface(df: pd.DataFrame):
     df_c   = pd.concat(clean)
     k_grid = np.linspace(df_c["moneyness"].quantile(0.02),
                          df_c["moneyness"].quantile(0.98), GRID_NK)
+
+    # ── Single expiry: 1D interpolation ──────────
+    if df_c["T"].nunique() == 1:
+        T_val  = float(df_c["T"].iloc[0])
+        t_grid = np.array([T_val])
+        grp    = df_c.sort_values("moneyness")
+        k_pts  = grp["moneyness"].values
+        iv_pts = grp["iv"].values
+        kind   = "cubic" if len(k_pts) >= 4 else "linear"
+        f      = interp1d(k_pts, iv_pts, kind=kind,
+                          bounds_error=False, fill_value=(iv_pts[0], iv_pts[-1]))
+        surf   = f(k_grid).reshape(1, -1)
+        return k_grid, t_grid, surf, df_c
+
+    # ── Multi-expiry: 2D griddata ─────────────────
     t_log  = np.linspace(np.log(df_c["T"].min()), np.log(df_c["T"].max()), GRID_NT)
     t_grid = np.exp(t_log)
-
     KK, TT = np.meshgrid(k_grid, t_grid)
     pts    = df_c[["moneyness", "T"]].values
     vals   = df_c["iv"].values
-
-    surf = griddata(pts, vals, (KK, TT), method="cubic")
-    near = griddata(pts, vals, (KK, TT), method="nearest")
+    surf   = griddata(pts, vals, (KK, TT), method="cubic")
+    near   = griddata(pts, vals, (KK, TT), method="nearest")
     surf[np.isnan(surf)] = near[np.isnan(surf)]
     return k_grid, t_grid, surf, df_c
 
