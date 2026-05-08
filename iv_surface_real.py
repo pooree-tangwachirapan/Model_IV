@@ -147,9 +147,18 @@ class NasdaqHistoricalSource(DataSource):
 
     def __init__(self, api_key: str):
         self.api_key = api_key
-        import nasdaqdatalink
-        nasdaqdatalink.ApiConfig.api_key = api_key
-        self._ndl = nasdaqdatalink
+        try:
+            import nasdaqdatalink as ndl
+        except ModuleNotFoundError:
+            try:
+                import nasdaq_data_link as ndl   # fallback name
+            except ModuleNotFoundError:
+                raise ImportError(
+                    "ติดตั้ง package ด้วย:  pip install nasdaq-data-link\n"
+                    "และเพิ่ม 'nasdaq-data-link' ใน requirements.txt"
+                )
+        ndl.ApiConfig.api_key = api_key
+        self._ndl = ndl
 
     @st.cache_data(ttl=3600, show_spinner=False)
     def fetch_quotes(_self, symbol: str, as_of_date: str = "", **kwargs) -> tuple[pd.DataFrame, float]:
@@ -917,10 +926,17 @@ class HistoricalMode(BaseMode):
                 st.warning("ยังไม่ได้เลือกวันที่"); return
 
             try:
-                import nasdaqdatalink as ndl
+                try:
+                    import nasdaqdatalink as ndl
+                except ModuleNotFoundError:
+                    import nasdaq_data_link as ndl
                 ndl.ApiConfig.api_key = api_key
             except Exception as e:
-                st.error(f"Import error: {e}"); return
+                st.error(
+                    f"**Import Error:** {e}\n\n"
+                    "เพิ่ม `nasdaq-data-link` ใน **requirements.txt** แล้ว redeploy"
+                )
+                return
 
             prog   = st.progress(0)
             status = st.empty()
