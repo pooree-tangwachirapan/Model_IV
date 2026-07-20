@@ -19,6 +19,8 @@ import requests
 from datetime import datetime
 import streamlit as st
 
+import fa_gex  # GEX + FlashAlpha API + Data Comparison (tab 2–3)
+
 # ── Page config ──────────────────────────────
 st.set_page_config(
     page_title="IV Surface — US Index",
@@ -566,97 +568,109 @@ if "S" not in st.session_state:
     st.info("👈 กด **โหลดข้อมูล** ใน Sidebar เพื่อเริ่ม")
     st.stop()
 
-# Debug: แสดง CBOE columns จริงที่ได้รับ
-if "cboe_columns" in st.session_state:
-    with st.expander("🔍 Debug: CBOE columns จริง (ดูเพื่อ troubleshoot)", expanded=False):
-        st.code(", ".join(st.session_state["cboe_columns"]))
+# ── Tabs: IV Surface (เดิม) / GEX / เทียบข้อมูล ──
+tab_iv, tab_gex, tab_cmp = st.tabs(["📈 IV Surface", "🧲 GEX", "⚖️ เทียบข้อมูล"])
 
-S = st.session_state["S"]
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Underlying", sym)
-c2.metric("Spot Price", f"{S:,.2f}")
-c3.metric("Data Source", "CBOE Delayed")
-c4.metric("Expiry Available", len(st.session_state.get("exp_info", [])))
+with tab_iv:
+    # Debug: แสดง CBOE columns จริงที่ได้รับ
+    if "cboe_columns" in st.session_state:
+        with st.expander("🔍 Debug: CBOE columns จริง (ดูเพื่อ troubleshoot)", expanded=False):
+            st.code(", ".join(st.session_state["cboe_columns"]))
 
-# ── Build & Plot ──────────────────────────────
-if "run_btn" in dir() and run_btn and selected_dates:
-    df_parsed = st.session_state["df_parsed"]
+    S = st.session_state["S"]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Underlying", sym)
+    c2.metric("Spot Price", f"{S:,.2f}")
+    c3.metric("Data Source", "CBOE Delayed")
+    c4.metric("Expiry Available", len(st.session_state.get("exp_info", [])))
 
-    # filter เฉพาะ expiry ที่เลือก
-    df_sel = df_parsed[df_parsed["expiry"].isin(selected_dates)].copy()
+    # ── Build & Plot ──────────────────────────────
+    if "run_btn" in dir() and run_btn and selected_dates:
+        df_parsed = st.session_state["df_parsed"]
 
-    if df_sel.empty:
-        st.error("ไม่มีข้อมูลสำหรับ expiry ที่เลือก")
-        st.stop()
+        # filter เฉพาะ expiry ที่เลือก
+        df_sel = df_parsed[df_parsed["expiry"].isin(selected_dates)].copy()
 
-    with st.spinner("กำลัง Interpolate IV Surface ..."):
-        k_grid, t_grid, iv_surface, df_clean = build_surface(df_sel)
+        if df_sel.empty:
+            st.error("ไม่มีข้อมูลสำหรับ expiry ที่เลือก")
+            st.stop()
 
-    if k_grid is None:
-        st.error("ข้อมูลไม่เพียงพอ — ลองเพิ่ม expiry")
-        st.stop()
+        with st.spinner("กำลัง Interpolate IV Surface ..."):
+            k_grid, t_grid, iv_surface, df_clean = build_surface(df_sel)
 
-    # บันทึกไว้ใน session_state เพื่อไม่ให้หายเมื่อ toggle x_mode
-    st.session_state["k_grid"]     = k_grid
-    st.session_state["t_grid"]     = t_grid
-    st.session_state["iv_surface"] = iv_surface
-    st.session_state["df_clean"]   = df_clean
-    st.session_state["df_sel"]     = df_sel
-    st.success(f"✅ IV points: {len(df_sel):,}  |  Expiry: {df_sel['T'].nunique()}  |  Strike range: {df_sel['strike'].min():.0f}–{df_sel['strike'].max():.0f}")
+        if k_grid is None:
+            st.error("ข้อมูลไม่เพียงพอ — ลองเพิ่ม expiry")
+            st.stop()
 
-# ── แสดงผลจาก session_state (ไม่หายเมื่อ toggle x_mode) ──
-if "iv_surface" in st.session_state:
-    k_grid     = st.session_state["k_grid"]
-    t_grid     = st.session_state["t_grid"]
-    iv_surface = st.session_state["iv_surface"]
-    df_clean   = st.session_state["df_clean"]
-    df_sel     = st.session_state["df_sel"]
-    x_mode_cur = st.session_state.get("x_mode_cur", "moneyness")
+        # บันทึกไว้ใน session_state เพื่อไม่ให้หายเมื่อ toggle x_mode
+        st.session_state["k_grid"]     = k_grid
+        st.session_state["t_grid"]     = t_grid
+        st.session_state["iv_surface"] = iv_surface
+        st.session_state["df_clean"]   = df_clean
+        st.session_state["df_sel"]     = df_sel
+        st.success(f"✅ IV points: {len(df_sel):,}  |  Expiry: {df_sel['T'].nunique()}  |  Strike range: {df_sel['strike'].min():.0f}–{df_sel['strike'].max():.0f}")
 
-    # ── Metric cards ──
-    st.subheader("📊 ATM Implied Volatility")
-    atm_idx   = int(np.argmin(np.abs(k_grid)))
-    sorted_Ts = sorted(df_clean["T"].unique())
-    n_cols    = min(len(sorted_Ts), 6)
-    cols      = st.columns(n_cols)
+    # ── แสดงผลจาก session_state (ไม่หายเมื่อ toggle x_mode) ──
+    if "iv_surface" in st.session_state:
+        k_grid     = st.session_state["k_grid"]
+        t_grid     = st.session_state["t_grid"]
+        iv_surface = st.session_state["iv_surface"]
+        df_clean   = st.session_state["df_clean"]
+        df_sel     = st.session_state["df_sel"]
+        x_mode_cur = st.session_state.get("x_mode_cur", "moneyness")
 
-    for j, t_val in enumerate(sorted_Ts[:n_cols]):
-        t_idx  = int(np.argmin(np.abs(t_grid - t_val)))
-        atm_iv = iv_surface[t_idx, atm_idx]
-        p_idx  = int(np.argmin(np.abs(k_grid - (-0.10))))
-        put_iv = iv_surface[t_idx, p_idx]
-        skew   = put_iv - atm_iv if not np.isnan(put_iv) else np.nan
-        with cols[j]:
-            st.markdown(f"""
-            <div class="metric-card">
-              <div class="metric-label">{fmt_T(t_val)} ATM</div>
-              <div class="metric-value">{atm_iv*100:.1f}%</div>
-              <div class="metric-sub">Skew {f"{skew*100:+.1f}%" if not np.isnan(skew) else "N/A"}</div>
-            </div>
-            """, unsafe_allow_html=True)
+        # ── Metric cards ──
+        st.subheader("📊 ATM Implied Volatility")
+        atm_idx   = int(np.argmin(np.abs(k_grid)))
+        sorted_Ts = sorted(df_clean["T"].unique())
+        n_cols    = min(len(sorted_Ts), 6)
+        cols      = st.columns(n_cols)
 
-    # ── Chart ── อ่าน x_mode จาก sidebar (ที่ defined แล้ว)
-    st.subheader("📈 IV Surface")
-    cur_x = x_mode if "x_mode" in dir() else x_mode_cur
-    fig = plot_surface(k_grid, t_grid, iv_surface, df_clean, S, sym, name, x_mode=cur_x)
-    st.plotly_chart(fig, use_container_width=True)
+        for j, t_val in enumerate(sorted_Ts[:n_cols]):
+            t_idx  = int(np.argmin(np.abs(t_grid - t_val)))
+            atm_iv = iv_surface[t_idx, atm_idx]
+            p_idx  = int(np.argmin(np.abs(k_grid - (-0.10))))
+            put_iv = iv_surface[t_idx, p_idx]
+            skew   = put_iv - atm_iv if not np.isnan(put_iv) else np.nan
+            with cols[j]:
+                st.markdown(f"""
+                <div class="metric-card">
+                  <div class="metric-label">{fmt_T(t_val)} ATM</div>
+                  <div class="metric-value">{atm_iv*100:.1f}%</div>
+                  <div class="metric-sub">Skew {f"{skew*100:+.1f}%" if not np.isnan(skew) else "N/A"}</div>
+                </div>
+                """, unsafe_allow_html=True)
 
-    # ── Raw data ──
-    with st.expander("📋 Raw Data"):
-        show = df_sel[["expiry","type","strike","moneyness","iv","bid","ask","volume"]].copy()
-        show["iv_%"]      = (show["iv"] * 100).round(2)
-        show["moneyness"] = show["moneyness"].round(4)
-        st.dataframe(show.drop(columns=["iv"]), use_container_width=True, height=300)
+        # ── Chart ── อ่าน x_mode จาก sidebar (ที่ defined แล้ว)
+        st.subheader("📈 IV Surface")
+        cur_x = x_mode if "x_mode" in dir() else x_mode_cur
+        fig = plot_surface(k_grid, t_grid, iv_surface, df_clean, S, sym, name, x_mode=cur_x)
+        st.plotly_chart(fig, use_container_width=True)
 
-    # ── Download ──
-    html = fig.to_html(include_plotlyjs="cdn")
-    st.download_button(
-        "⬇️ Download IV Surface (HTML)",
-        data=html,
-        file_name=f"iv_surface_{sym}_{datetime.now().strftime('%Y%m%d_%H%M')}.html",
-        mime="text/html",
-        use_container_width=True,
-    )
+        # ── Raw data ──
+        with st.expander("📋 Raw Data"):
+            show = df_sel[["expiry","type","strike","moneyness","iv","bid","ask","volume"]].copy()
+            show["iv_%"]      = (show["iv"] * 100).round(2)
+            show["moneyness"] = show["moneyness"].round(4)
+            st.dataframe(show.drop(columns=["iv"]), use_container_width=True, height=300)
 
-elif "df_parsed" in st.session_state:
-    st.info("👈 เลือก Expiry แล้วกด **🚀 สร้าง IV Surface**")
+        # ── Download ──
+        html = fig.to_html(include_plotlyjs="cdn")
+        st.download_button(
+            "⬇️ Download IV Surface (HTML)",
+            data=html,
+            file_name=f"iv_surface_{sym}_{datetime.now().strftime('%Y%m%d_%H%M')}.html",
+            mime="text/html",
+            use_container_width=True,
+        )
+
+    elif "df_parsed" in st.session_state:
+        st.info("👈 เลือก Expiry แล้วกด **🚀 สร้าง IV Surface**")
+
+# ── Tab 2: GEX ────────────────────────────────
+with tab_gex:
+    fa_gex.render_gex_tab(sym=sym, name=name, cboe_fetch=cboe_fetch_all)
+
+# ── Tab 3: เทียบข้อมูล CBOE vs FlashAlpha ─────
+with tab_cmp:
+    fa_gex.render_compare_tab(cboe_fetch=cboe_fetch_all)

@@ -1,0 +1,13 @@
+# ── Secrets — ห้าม commit เด็ดขาด (repo เป็น public) ──
+.streamlit/secrets.toml
+API_flashalpha.txt
+*.key
+
+# ── Python ──
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ── Claude Code ──
+.claude/
