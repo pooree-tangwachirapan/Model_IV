@@ -196,12 +196,15 @@ def parse_options(df_raw: pd.DataFrame, S: float) -> pd.DataFrame:
         df["iv"] = np.nan
 
     # ── 7. คำนวณ T, moneyness ──
-    today = datetime.now()
-    df["T"] = df["expiry"].apply(
-        lambda x: max((datetime.strptime(x[:10], "%Y-%m-%d") - today).days, 0) / 365.0
-        if len(x) >= 10 else 0
+    # เทียบเป็น "วันที่" (ไม่ใช่ datetime) และไม่ clamp เป็น 0:
+    # ถ้า clamp → expiry ที่หมดอายุแล้วกลายเป็น 0d และ expiry พรุ่งนี้ (1DTE) ก็กลายเป็น 0d
+    # แล้วโดน filter days > 0 ทิ้งไปทั้งคู่ — near-term expiry หายเงียบ ๆ
+    today = datetime.now().date()
+    df["days"] = df["expiry"].apply(
+        lambda x: (datetime.strptime(x[:10], "%Y-%m-%d").date() - today).days
+        if len(x) >= 10 else -999
     )
-    df["days"]      = (df["T"] * 365).round().astype(int)
+    df["T"]         = df["days"] / 365.0
     df["moneyness"] = np.log(df["strike"] / S)
 
     # ── 8. filter ──

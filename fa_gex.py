@@ -31,6 +31,14 @@ FA_BASE = "https://lab.flashalpha.com"
 GEX_MONEYNESS_WIN = 0.25          # เก็บ strike ±25% รอบ spot พอสำหรับหา walls
 RISK_FREE = 0.05                  # ใช้เฉพาะ BS gamma fallback
 
+# Free tier ของ FlashAlpha รับเฉพาะหุ้นรายตัว — ETF/Index ตอบ 403 (ยืนยันจากการยิงจริง)
+# กันไว้ฝั่ง client เพื่อไม่ให้เสีย quota ฟรี ๆ กับ symbol ที่รู้อยู่แล้วว่าไม่ผ่าน
+FA_BLOCKED_FREE = {
+    "SPY", "QQQ", "IWM", "DIA", "VOO", "VTI", "EEM", "EFA", "XLF", "XLE", "XLK",
+    "SMH", "SOXL", "TQQQ", "SQQQ", "GLD", "SLV", "TLT", "HYG", "ARKK", "UVXY", "VXX",
+    "SPX", "NDX", "RUT", "VIX", "XSP", "SPXW",
+}
+
 
 # ════════════════════════════════════════════════
 # API key resolution: st.secrets → env → sidebar input
@@ -118,10 +126,12 @@ def parse_cboe_for_gex(df_raw: pd.DataFrame, S: float) -> pd.DataFrame:
     if df["iv"].dropna().max() and df["iv"].dropna().max() > 5:
         df["iv"] = df["iv"] / 100.0
 
-    today = datetime.now()
+    # เทียบเป็น "วันที่" ไม่ใช่ datetime — ไม่งั้น expiry วันนี้ติดลบตอนบ่าย
+    # และห้าม clamp เป็น 0 ไม่งั้น expiry ที่หมดอายุแล้วจะถูกนับเป็น 0DTE ปลอม
+    today = datetime.now().date()
     df["days"] = df["expiry"].apply(
-        lambda x: max((datetime.strptime(str(x)[:10], "%Y-%m-%d") - today).days, 0)
-        if x and len(str(x)) >= 10 else -1)
+        lambda x: (datetime.strptime(str(x)[:10], "%Y-%m-%d").date() - today).days
+        if x and len(str(x)) >= 10 else -999)
 
     df = df[
         df["strike"].notna() & df["type"].notna() & (df["days"] >= 0) &
@@ -159,9 +169,51 @@ def compute_gex(df: pd.DataFrame, S: float) -> pd.DataFrame:
     return ps.reset_index().sort_values("strike").reset_index(drop=True)
 
 
-def find_levels(ps: pd.DataFrame, S: float) -> dict:
-    """Flip / Call Wall / Put Wall / Net จาก per-strike GEX"""
-    out = {"net": 0.0, "flip": None, "call_wall": None, "put_wall": None}
+def gamma_profile(df: pd.DataFrame, S: float, span: float = 0.12, n: int = 121):
+    """
+    Net GEX profile ถ้า spot ย้ายไปที่ราคาต่าง ๆ — reprice gamma ใหม่ทุกจุด (BS)
+    คืน (spot_ladder, net_gex_at_each_spot)
+
+    ทำไมต้องทำแบบนี้: gamma ไม่ใช่ค่าคงที่ มันขึ้นกับระยะห่าง spot↔strike
+    วิธี cumulative-sum ข้าม strike เป็นแค่ approximation และพังทันทีถ้า chain
+    เป็นลบทั้งเส้น (ไม่มี zero-crossing เลย → Flip = N/A ตลอด)
+    """
+    d = df[df["iv"].notna() & (df["iv"] > 0)]
+    if d.empty:
+        return None, None
+
+    ladder = np.linspace(S * (1 - span), S * (1 + span), n)
+    K   = d["strike"].to_numpy()[:, None]
+    iv  = d["iv"].to_numpy()[:, None]
+    T   = np.maximum(d["days"].to_numpy()[:, None], 0.5) / 365.0   # 0DTE → ครึ่งวัน
+    OI  = d["open_interest"].to_numpy()[:, None]
+    sgn = np.where(d["type"].to_numpy()[:, None] == "put", -1.0, 1.0)
+
+    Ss  = ladder[None, :]
+    vol = iv * np.sqrt(T)
+    d1  = (np.log(Ss / K) + (RISK_FREE + 0.5 * iv ** 2) * T) / vol
+    gam = norm.pdf(d1) / (Ss * vol)
+    return ladder, (sgn * gam * OI * 100 * Ss ** 2 * 0.01).sum(axis=0)
+
+
+def _zero_cross(x: np.ndarray, y: np.ndarray, near: float):
+    """หาจุดที่ y ตัดศูนย์ (interpolate) แล้วเลือกจุดที่ใกล้ near สุด"""
+    hits = []
+    for i in range(1, len(y)):
+        if y[i - 1] == 0:
+            hits.append(float(x[i - 1]))
+        elif (y[i - 1] < 0) != (y[i] < 0):
+            hits.append(float(x[i - 1] + (0 - y[i - 1]) * (x[i] - x[i - 1]) / (y[i] - y[i - 1])))
+    return min(hits, key=lambda v: abs(v - near)) if hits else None
+
+
+def find_levels(ps: pd.DataFrame, S: float, df_contracts: pd.DataFrame | None = None) -> dict:
+    """
+    Flip / Call Wall / Put Wall / Net
+    ส่ง df_contracts (ผลจาก parse_cboe_for_gex) มาด้วย → Flip คำนวณแบบ spot-ladder
+    ไม่ส่งมา → fallback เป็น cumulative-sum ข้าม strike (อ่อนกว่า มักได้ N/A)
+    """
+    out = {"net": 0.0, "flip": None, "call_wall": None, "put_wall": None, "flip_method": None}
     if ps.empty:
         return out
     out["net"] = float(ps["net_gex"].sum())
@@ -170,18 +222,48 @@ def find_levels(ps: pd.DataFrame, S: float) -> dict:
     if (ps["put_gex"] < 0).any():
         out["put_wall"] = float(ps.loc[ps["put_gex"].idxmin(), "strike"])
 
-    # Gamma Flip: zero-crossing ของ cumulative net GEX (เลือกจุดใกล้ spot สุด)
-    cum = ps["net_gex"].cumsum().values
-    strikes = ps["strike"].values
-    crossings = []
-    for i in range(1, len(cum)):
-        if cum[i - 1] == 0 or (cum[i - 1] < 0) != (cum[i] < 0):
-            k0, k1, c0, c1 = strikes[i - 1], strikes[i], cum[i - 1], cum[i]
-            k = k0 if c1 == c0 else k0 + (0 - c0) * (k1 - k0) / (c1 - c0)
-            crossings.append(k)
-    if crossings:
-        out["flip"] = float(min(crossings, key=lambda k: abs(k - S)))
+    # ── วิธีหลัก: spot ladder (reprice gamma) ──
+    if df_contracts is not None and not df_contracts.empty:
+        ladder, prof = gamma_profile(df_contracts, S)
+        if ladder is not None:
+            flip = _zero_cross(ladder, prof, S)
+            if flip is not None:
+                out["flip"], out["flip_method"] = flip, "spot-ladder"
+                out["profile"] = (ladder, prof)
+            else:
+                out["profile"] = (ladder, prof)
+                out["flip_method"] = "ไม่มี zero-crossing ใน ±12% รอบ spot"
+
+    # ── fallback: cumulative sum ข้าม strike ──
+    if out["flip"] is None and out["flip_method"] != "spot-ladder":
+        cum = ps["net_gex"].cumsum().to_numpy()
+        flip = _zero_cross(ps["strike"].to_numpy(), cum, S)
+        if flip is not None:
+            out["flip"], out["flip_method"] = flip, "cumulative-sum"
     return out
+
+
+def plot_gamma_profile(ladder, prof, S: float, flip) -> go.Figure:
+    """Net GEX ถ้า spot ย้าย — จุดตัดศูนย์คือ Gamma Flip"""
+    scale, unit = (1e9, "$Bn") if np.abs(prof).max() >= 1e9 else (1e6, "$M")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=ladder, y=prof / scale, mode="lines", name="Net GEX",
+        line=dict(color="#00e0ff", width=2.5),
+        hovertemplate="Spot %{x:,.1f}<br>Net %{y:.2f} " + unit + "<extra></extra>"))
+    fig.add_hline(y=0, line_color="rgba(255,255,255,0.35)", line_width=1)
+    fig.add_vline(x=S, line_color="#ffffff", line_dash="dash",
+                  annotation_text=f"Spot {S:,.2f}")
+    if flip:
+        fig.add_vline(x=flip, line_color="#f39c12", line_dash="dot",
+                      annotation_text=f"Flip {flip:,.1f}")
+    fig.update_layout(
+        template="plotly_dark", paper_bgcolor="#080d1c", plot_bgcolor="#0d1425",
+        title="Gamma Profile — Net GEX ถ้า spot ย้ายไปแต่ละระดับ (จุดตัด 0 = Gamma Flip)",
+        xaxis_title="Hypothetical Spot", yaxis_title=f"Net GEX ({unit})",
+        font=dict(family="monospace", size=11, color="#c8d8f0"),
+        height=380, margin=dict(l=10, r=10, t=50, b=10), showlegend=False)
+    return fig
 
 
 def fmt_usd(x) -> str:
@@ -413,19 +495,31 @@ def render_gex_tab(sym: str, name: str, cboe_fetch):
         if ps.empty:
             st.warning("ไม่มีข้อมูลในหน้าต่างที่เลือก")
             return
-        lv = find_levels(ps, S)
+        lv = find_levels(ps, S, df_contracts=d)
 
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Net GEX", fmt_usd(lv["net"]))
         c2.metric("Spot", f"{S:,.2f}")
-        c3.metric("Gamma Flip", f"{lv['flip']:,.1f}" if lv["flip"] else "N/A")
+        c3.metric("Gamma Flip", f"{lv['flip']:,.1f}" if lv["flip"] else "N/A",
+                  help=f"วิธี: {lv.get('flip_method') or 'N/A'}")
         c4.metric("Call Wall", f"{lv['call_wall']:,.0f}" if lv["call_wall"] else "N/A")
         c5.metric("Put Wall", f"{lv['put_wall']:,.0f}" if lv["put_wall"] else "N/A")
         st.info(regime_text(lv["net"]) + " · ⚠️ OI อัปเดตข้ามคืน — ระหว่างวันใช้ราคาเทียบ Flip เป็นตัวตัดสินจริง")
+        st.caption("⚠️ **เครื่องหมาย/ขนาดของ Net GEX ขึ้นกับ convention** (สูตรนี้สมมติ dealer long call / short put "
+                   "ตามมาตรฐาน SqueezeMetrics) — index chain ที่ put OI หนักจะอ่านเป็นลบเสมอ "
+                   "ตัวที่ใช้ได้จริงคือ **ตำแหน่ง Walls/Flip และรูปทรง profile** ไม่ใช่เลขดิบ")
 
         st.plotly_chart(plot_gex_bars(
             ps, S, lv, f"GEX — {name}  [{chosen}]  ·  CBOE Delayed  ·  {datetime.now():%Y-%m-%d %H:%M}"),
             use_container_width=True)
+
+        if lv.get("profile"):
+            ladder, prof = lv["profile"]
+            st.plotly_chart(plot_gamma_profile(ladder, prof, S, lv["flip"]),
+                            use_container_width=True)
+            if not lv["flip"]:
+                st.caption(f"ℹ️ {lv['flip_method']} — chain เป็นฝั่งเดียวทั้งเส้นในช่วงนี้ "
+                           "(ดู profile ว่าเข้าใกล้ศูนย์ทางไหน)")
 
         with st.expander("📋 GEX per strike"):
             show = ps.copy()
@@ -449,8 +543,15 @@ def render_gex_tab(sym: str, name: str, cboe_fetch):
         fa_exp = c2.text_input("Expiration (YYYY-MM-DD · เว้นว่าง = ทุก expiry)",
                                value="", key="fa_gex_exp").strip()
 
+        blocked = fa_sym in FA_BLOCKED_FREE
+        if blocked:
+            st.warning(f"🔒 **{fa_sym}** เป็น ETF/Index — Free tier ตอบ 403 แน่นอน "
+                       f"(ต้อง Basic $63/เดือน) → ใช้แหล่ง **🆓 CBOE** ด้านบนแทน ได้ผลเหมือนกันและฟรี\n\n"
+                       f"ปุ่มถูกล็อกไว้เพื่อไม่ให้เสีย quota (เหลือ 5 req/วัน)")
+
         st.caption("⚠️ กด 1 ครั้ง = ใช้ 1 request (cache 30 นาที — กดซ้ำ symbol เดิมไม่เสีย quota เพิ่ม)")
-        if st.button("⚡ โหลด GEX จาก FlashAlpha", type="primary", key="fa_gex_btn"):
+        if st.button("⚡ โหลด GEX จาก FlashAlpha", type="primary", key="fa_gex_btn",
+                     disabled=blocked):
             params = {"expiration": fa_exp} if fa_exp else {}
             res = fa_fetch(f"/v1/exposure/gex/{fa_sym}", key, params)
             st.session_state["fa_gex_res"] = res
@@ -510,8 +611,13 @@ def render_compare_tab(cboe_fetch):
                         value="NVDA", key="cmp_sym").strip().upper().lstrip("_")
     exp = c2.text_input("Expiration (YYYY-MM-DD · เว้นว่าง = ทุก expiry)", value="", key="cmp_exp").strip()
 
+    blocked = sym in FA_BLOCKED_FREE
+    if blocked:
+        st.warning(f"🔒 **{sym}** เป็น ETF/Index — Free tier ยิงไปก็ 403 (ต้อง Basic ขึ้นไป) "
+                   f"ปุ่มถูกล็อกกัน quota · ใช้หุ้นรายตัวเทียบแทน เช่น NVDA / AAPL / TSLA")
+
     st.caption("⚠️ กด 1 ครั้ง = FlashAlpha 1 request + CBOE ฟรี (ผลค้างไว้ ดูซ้ำได้ไม่เสีย quota)")
-    if st.button("🔬 เทียบข้อมูลตอนนี้", type="primary", key="cmp_btn"):
+    if st.button("🔬 เทียบข้อมูลตอนนี้", type="primary", key="cmp_btn", disabled=blocked):
         with st.spinner("ดึง CBOE + FlashAlpha ..."):
             # CBOE (ฟรี)
             try:
@@ -543,7 +649,7 @@ def render_compare_tab(cboe_fetch):
     if r["exp"]:
         dfg = dfg[dfg["expiry"] == r["exp"]]
     ps_cboe = compute_gex(dfg, S_cboe)
-    lv_cboe = find_levels(ps_cboe, S_cboe)
+    lv_cboe = find_levels(ps_cboe, S_cboe, df_contracts=dfg)
 
     # ── ฝั่ง FlashAlpha ──
     df_fa, meta = parse_fa_gex(r["fa_res"]["body"])
