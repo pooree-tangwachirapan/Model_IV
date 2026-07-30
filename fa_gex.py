@@ -6,7 +6,7 @@ GEX formula (dealer convention — ตาม Institutional Options Analysis meth
     GEX_strike = Gamma × OI × 100 × Spot² × 0.01     [USD notional ต่อการขยับ 1%]
     Call GEX = บวก / Put GEX = ลบ  (สมมติฐาน: dealer long call gamma, short put gamma)
     Net GEX     = Σ call_gex + Σ put_gex
-    Gamma Flip  = strike ที่ cumulative net GEX ข้ามศูนย์ (จุดใกล้ spot สุด)
+    Gamma Flip  = spot ที่ net GEX (reprice gamma ทุกระดับ) ข้ามศูนย์ — ดู gamma_profile()
     Call Wall   = strike ที่ call_gex สูงสุด
     Put Wall    = strike ที่ |put_gex| สูงสุด
 
@@ -14,7 +14,7 @@ FlashAlpha API (https://lab.flashalpha.com):
     auth: header X-Api-Key
     GET /v1/exposure/gex/{symbol}?expiration=YYYY-MM-DD
     GET /v1/exposure/levels/{symbol}
-    Free tier: 5 req/วัน, หุ้นรายตัวเท่านั้น (ETF/Index ต้อง Basic+) → cache หนัก + โหลด manual เท่านั้น
+    Free tier: 5 req/วัน + หุ้นรายตัวเท่านั้น + ห้าม 0DTE → cache หนัก + โหลด manual + preflight guard
 """
 
 import os
@@ -31,8 +31,14 @@ FA_BASE = "https://lab.flashalpha.com"
 GEX_MONEYNESS_WIN = 0.25          # เก็บ strike ±25% รอบ spot พอสำหรับหา walls
 RISK_FREE = 0.05                  # ใช้เฉพาะ BS gamma fallback
 
-# Free tier ของ FlashAlpha รับเฉพาะหุ้นรายตัว — ETF/Index ตอบ 403 (ยืนยันจากการยิงจริง)
-# กันไว้ฝั่ง client เพื่อไม่ให้เสีย quota ฟรี ๆ กับ symbol ที่รู้อยู่แล้วว่าไม่ผ่าน
+# ── ข้อจำกัด FlashAlpha ตาม tier (ยืนยันจากการยิงจริง 2026-07-30) ──
+#   Free   : หุ้นรายตัว + expiration ที่ไม่ใช่วันนี้        5 req/วัน
+#   Basic  : + ETF/Index (SPY/QQQ/SPX)                    100 req/วัน
+#   Growth : + 0DTE (same-day expiration)               2,500 req/วัน
+FA_TIER_NOTE = ("Free = หุ้นรายตัว & ไม่ใช่ 0DTE · ETF/Index ต้อง Basic · "
+                "0DTE ต้อง Growth")
+
+# ETF/Index ที่รู้ว่า Free tier ตอบ 403 — กันฝั่ง client ไม่ให้เสีย quota ฟรี ๆ
 FA_BLOCKED_FREE = {
     "SPY", "QQQ", "IWM", "DIA", "VOO", "VTI", "EEM", "EFA", "XLF", "XLE", "XLK",
     "SMH", "SOXL", "TQQQ", "SQQQ", "GLD", "SLV", "TLT", "HYG", "ARKK", "UVXY", "VXX",
@@ -353,20 +359,38 @@ def fa_fetch(path: str, key: str, params: dict | None = None) -> dict:
 
 
 def fa_error_message(res: dict) -> str | None:
+    """
+    ขึ้นข้อความจาก server เป็นหลักเสมอ แล้วค่อยเติมคำแนะนำตามเนื้อหาที่ server บอก
+    (403 มีได้หลายสาเหตุ — ETF/Index, 0DTE, endpoint เกิน tier — ห้ามเดาสาเหตุเดียว)
+    """
     s = res["status"]
     if s == 200:
         return None
     body = res.get("body", {})
-    detail = body.get("message") or body.get("error") or body.get("detail") or body.get("_raw_text", "")
+    detail = (body.get("message") or body.get("error") or body.get("detail")
+              or body.get("_raw_text", "") or "").strip()
+    low = detail.lower()
+
     if s == 401:
-        return f"🔑 API key ไม่ถูกต้อง (401) — ตรวจ key ใน secrets/sidebar อีกครั้ง  {detail}"
+        return f"🔑 **API key ไม่ถูกต้อง (401)** — ตรวจ key ใน secrets/sidebar อีกครั้ง\n\n{detail}"
     if s == 403:
-        return ("🔒 Symbol นี้ใช้กับ tier ปัจจุบันไม่ได้ (403) — **Free tier ใช้ได้เฉพาะหุ้นรายตัว** "
-                f"(QQQ/SPY/SPX ต้อง Basic ขึ้นไป)  {detail}")
+        if "0dte" in low or "same-day" in low:
+            hint = ("👉 **สาเหตุคือ expiration เป็นวันนี้ (0DTE) ไม่ใช่ตัว symbol** — "
+                    "0DTE ต้อง Growth plan ขึ้นไป\n\n"
+                    "ทางแก้ที่ไม่ต้องจ่าย: เลือก expiration เป็น**วันอื่นที่ไม่ใช่วันนี้** "
+                    "(เว้นว่างก็ได้) หรือใช้แหล่ง 🆓 CBOE ที่ให้ 0DTE ฟรี")
+        elif "etf" in low or "index" in low:
+            hint = ("👉 **ETF/Index ต้อง Basic ขึ้นไป** — ใช้หุ้นรายตัว (NVDA/AAPL/TSLA) "
+                    "หรือแหล่ง 🆓 CBOE ที่ใช้ QQQ/SPX ได้ฟรี")
+        else:
+            hint = "👉 request นี้เกินสิทธิ์ของ tier ปัจจุบัน — ดูข้อความจาก server ด้านบน"
+        return f"🔒 **FlashAlpha ปฏิเสธ (403)**\n\n> {detail}\n\n{hint}"
     if s == 429:
         ra = res.get("ratelimit", {}).get("Retry-After")
-        return f"⏳ เกิน quota แล้ว (429) — Free tier = 5 req/วัน  Retry-After: {ra or 'N/A'}  {detail}"
-    return f"⚠️ FlashAlpha error HTTP {s}  {detail}"
+        extra = f" (~{int(ra)//3600} ชม.)" if str(ra).isdigit() else ""
+        return (f"⏳ **เกิน quota แล้ว (429)** — Free tier = 5 req/วัน\n\n> {detail}\n\n"
+                f"Retry-After: {ra or 'N/A'}{extra}")
+    return f"⚠️ **FlashAlpha error HTTP {s}**\n\n> {detail}"
 
 
 def _first_key(d: dict, names, default=None):
@@ -381,8 +405,8 @@ def parse_fa_gex(body) -> tuple[pd.DataFrame, dict]:
     Defensive parser — รองรับ schema หลายทรง:
     คืน (per-strike df [strike, call_gex, put_gex, net_gex], meta {spot, net, flip, call_wall, put_wall, timestamp})
     """
-    meta = {"spot": None, "net": None, "flip": None,
-            "call_wall": None, "put_wall": None, "timestamp": None}
+    meta = {"spot": None, "net": None, "flip": None, "call_wall": None,
+            "put_wall": None, "timestamp": None, "label": None, "wall_source": None}
     if body is None:
         return pd.DataFrame(), meta
 
@@ -397,6 +421,7 @@ def parse_fa_gex(body) -> tuple[pd.DataFrame, dict]:
                                        _first_key(root, ["timestamp"]))
         meta["call_wall"] = _first_key(data, ["call_wall", "callWall"])
         meta["put_wall"]  = _first_key(data, ["put_wall", "putWall"])
+        meta["label"]     = _first_key(data, ["net_gex_label", "gex_label", "regime"])
         flip = _first_key(data, ["gamma_flip", "flip", "zero_gamma", "flip_point"])
         if isinstance(flip, (int, float)) and not isinstance(flip, bool):
             meta["flip"] = float(flip)
@@ -440,12 +465,37 @@ def parse_fa_gex(body) -> tuple[pd.DataFrame, dict]:
     if not df.empty:
         df = df.sort_values("strike").reset_index(drop=True)
         # ถ้า put_gex เป็นบวกทั้งหมดแต่มี call แยก → แปลง sign เป็น dealer convention เพื่อ plot สอดคล้อง
+        # (ยืนยัน 2026-07-30: /v1/exposure/gex ส่ง put_gex ติดลบมาแล้ว = convention เดียวกับเรา
+        #  guard นี้จึงไม่ทำงาน แต่คงไว้เผื่อ endpoint อื่น/เวอร์ชันอื่น)
         if (df["put_gex"] > 0).all() and df["put_gex"].abs().sum() > 0 and (df["call_gex"] >= 0).all():
             df["put_gex"] = -df["put_gex"]
             df["net_gex"] = df["call_gex"] + df["put_gex"]
         if meta["net"] is None:
             meta["net"] = float(df["net_gex"].sum())
+        # endpoint /v1/exposure/gex ไม่ส่ง call_wall/put_wall มา (ต้องเรียก /levels = อีก 1 request)
+        # → derive จาก per-strike เองด้วยนิยามเดียวกับฝั่ง CBOE เพื่อเทียบกันได้ตรง ๆ ฟรี
+        if meta["call_wall"] is None and (df["call_gex"] > 0).any():
+            meta["call_wall"] = float(df.loc[df["call_gex"].idxmax(), "strike"])
+            meta["wall_source"] = "derived"
+        if meta["put_wall"] is None and (df["put_gex"] < 0).any():
+            meta["put_wall"] = float(df.loc[df["put_gex"].idxmin(), "strike"])
+            meta["wall_source"] = "derived"
     return df, meta
+
+
+def fa_preflight(sym: str, exp: str) -> list[str]:
+    """
+    ตรวจก่อนยิง — คืน list เหตุผลที่ Free tier จะถูกปฏิเสธ (ว่าง = ยิงได้)
+    ประหยัด quota: ไม่ต้องเสีย request ไปเรียนรู้สิ่งที่รู้อยู่แล้ว
+    """
+    reasons = []
+    if sym in FA_BLOCKED_FREE:
+        reasons.append(f"**{sym}** เป็น ETF/Index → ต้อง Basic ($63/เดือน) · "
+                       "ใช้แหล่ง 🆓 CBOE แทนได้ ฟรีและได้ผลเหมือนกัน")
+    if exp and exp == datetime.now().strftime("%Y-%m-%d"):
+        reasons.append(f"**{exp} คือวันนี้ = 0DTE** → ต้อง Growth plan · "
+                       "เลือก expiration วันอื่น หรือเว้นว่าง (หรือใช้ 🆓 CBOE ที่ให้ 0DTE ฟรี)")
+    return reasons
 
 
 def show_quota_badge():
@@ -511,12 +561,12 @@ def render_gex_tab(sym: str, name: str, cboe_fetch):
 
         st.plotly_chart(plot_gex_bars(
             ps, S, lv, f"GEX — {name}  [{chosen}]  ·  CBOE Delayed  ·  {datetime.now():%Y-%m-%d %H:%M}"),
-            use_container_width=True)
+            width="stretch")
 
         if lv.get("profile"):
             ladder, prof = lv["profile"]
             st.plotly_chart(plot_gamma_profile(ladder, prof, S, lv["flip"]),
-                            use_container_width=True)
+                            width="stretch")
             if not lv["flip"]:
                 st.caption(f"ℹ️ {lv['flip_method']} — chain เป็นฝั่งเดียวทั้งเส้นในช่วงนี้ "
                            "(ดู profile ว่าเข้าใกล้ศูนย์ทางไหน)")
@@ -525,7 +575,7 @@ def render_gex_tab(sym: str, name: str, cboe_fetch):
             show = ps.copy()
             for c in ("call_gex", "put_gex", "net_gex"):
                 show[c] = show[c].apply(fmt_usd)
-            st.dataframe(show, use_container_width=True, height=280)
+            st.dataframe(show, width="stretch", height=280)
 
     # ── Source B: FlashAlpha ────────────────────
     else:
@@ -541,17 +591,18 @@ def render_gex_tab(sym: str, name: str, cboe_fetch):
         fa_sym = c1.text_input("Symbol (Free tier = หุ้นรายตัว เช่น NVDA, AAPL, TSLA)",
                                value="NVDA", key="fa_gex_sym").strip().upper().lstrip("_")
         fa_exp = c2.text_input("Expiration (YYYY-MM-DD · เว้นว่าง = ทุก expiry)",
-                               value="", key="fa_gex_exp").strip()
+                               value="", key="fa_gex_exp",
+                               help="ห้ามใส่วันนี้ — 0DTE ต้อง Growth plan. เว้นว่างปลอดภัยสุด").strip()
 
-        blocked = fa_sym in FA_BLOCKED_FREE
-        if blocked:
-            st.warning(f"🔒 **{fa_sym}** เป็น ETF/Index — Free tier ตอบ 403 แน่นอน "
-                       f"(ต้อง Basic $63/เดือน) → ใช้แหล่ง **🆓 CBOE** ด้านบนแทน ได้ผลเหมือนกันและฟรี\n\n"
-                       f"ปุ่มถูกล็อกไว้เพื่อไม่ให้เสีย quota (เหลือ 5 req/วัน)")
+        reasons = fa_preflight(fa_sym, fa_exp)
+        if reasons:
+            st.warning("🔒 **Free tier จะปฏิเสธ request นี้** — ปุ่มถูกล็อกกัน quota เสียเปล่า\n\n"
+                       + "\n\n".join(f"- {r}" for r in reasons))
 
-        st.caption("⚠️ กด 1 ครั้ง = ใช้ 1 request (cache 30 นาที — กดซ้ำ symbol เดิมไม่เสีย quota เพิ่ม)")
+        st.caption(f"⚠️ กด 1 ครั้ง = ใช้ 1 request (cache 30 นาที — กดซ้ำ symbol เดิมไม่เสีย quota เพิ่ม) · "
+                   f"ข้อจำกัด: {FA_TIER_NOTE}")
         if st.button("⚡ โหลด GEX จาก FlashAlpha", type="primary", key="fa_gex_btn",
-                     disabled=blocked):
+                     disabled=bool(reasons)):
             params = {"expiration": fa_exp} if fa_exp else {}
             res = fa_fetch(f"/v1/exposure/gex/{fa_sym}", key, params)
             st.session_state["fa_gex_res"] = res
@@ -575,8 +626,11 @@ def render_gex_tab(sym: str, name: str, cboe_fetch):
         c4.metric("Call Wall", f"{meta['call_wall']:,.0f}" if meta["call_wall"] else "N/A")
         c5.metric("Put Wall", f"{meta['put_wall']:,.0f}" if meta["put_wall"] else "N/A")
         if meta["net"] is not None:
-            st.info(regime_text(meta["net"]))
-        st.caption(f"⏱️ FlashAlpha timestamp: {meta['timestamp'] or 'N/A'} · fetched {res['fetched_at']}")
+            lbl = f" · vendor label: **{meta['label']}**" if meta.get("label") else ""
+            st.info(regime_text(meta["net"]) + lbl)
+        st.caption(f"⏱️ FlashAlpha timestamp: {meta['timestamp'] or 'N/A'} · fetched {res['fetched_at']}"
+                   + (" · Walls คำนวณจาก per-strike (endpoint ไม่ส่งมา)"
+                      if meta.get("wall_source") == "derived" else ""))
 
         if not df_fa.empty:
             lv_fa = {"net": meta["net"] or 0, "flip": meta["flip"],
@@ -584,7 +638,7 @@ def render_gex_tab(sym: str, name: str, cboe_fetch):
             st.plotly_chart(plot_gex_bars(
                 df_fa, spot or df_fa["strike"].median(), lv_fa,
                 f"GEX — {st.session_state.get('fa_gex_res_sym','')}  ·  FlashAlpha"),
-                use_container_width=True)
+                width="stretch")
         else:
             st.warning("ไม่พบ per-strike array ใน response — ดู raw JSON ด้านล่างแล้วบอกโครงสร้างจริงได้เลย")
         with st.expander("🔍 Raw JSON (debug)"):
@@ -609,15 +663,17 @@ def render_compare_tab(cboe_fetch):
     c1, c2 = st.columns([2, 2])
     sym = c1.text_input("Symbol (Free tier = หุ้นรายตัว เช่น NVDA, AAPL)",
                         value="NVDA", key="cmp_sym").strip().upper().lstrip("_")
-    exp = c2.text_input("Expiration (YYYY-MM-DD · เว้นว่าง = ทุก expiry)", value="", key="cmp_exp").strip()
+    exp = c2.text_input("Expiration (YYYY-MM-DD · เว้นว่าง = ทุก expiry)", value="", key="cmp_exp",
+                        help="ห้ามใส่วันนี้ — 0DTE ต้อง Growth plan. เว้นว่างปลอดภัยสุด").strip()
 
-    blocked = sym in FA_BLOCKED_FREE
-    if blocked:
-        st.warning(f"🔒 **{sym}** เป็น ETF/Index — Free tier ยิงไปก็ 403 (ต้อง Basic ขึ้นไป) "
-                   f"ปุ่มถูกล็อกกัน quota · ใช้หุ้นรายตัวเทียบแทน เช่น NVDA / AAPL / TSLA")
+    reasons = fa_preflight(sym, exp)
+    if reasons:
+        st.warning("🔒 **Free tier จะปฏิเสธ request นี้** — ปุ่มถูกล็อกกัน quota เสียเปล่า\n\n"
+                   + "\n\n".join(f"- {r}" for r in reasons))
 
-    st.caption("⚠️ กด 1 ครั้ง = FlashAlpha 1 request + CBOE ฟรี (ผลค้างไว้ ดูซ้ำได้ไม่เสีย quota)")
-    if st.button("🔬 เทียบข้อมูลตอนนี้", type="primary", key="cmp_btn", disabled=blocked):
+    st.caption(f"⚠️ กด 1 ครั้ง = FlashAlpha 1 request + CBOE ฟรี (ผลค้างไว้ ดูซ้ำได้ไม่เสีย quota) · "
+               f"ข้อจำกัด: {FA_TIER_NOTE}")
+    if st.button("🔬 เทียบข้อมูลตอนนี้", type="primary", key="cmp_btn", disabled=bool(reasons)):
         with st.spinner("ดึง CBOE + FlashAlpha ..."):
             # CBOE (ฟรี)
             try:
@@ -664,9 +720,11 @@ def render_compare_tab(cboe_fetch):
          f"{S_fa:,.2f}" if S_fa else "N/A", spot_diff),
         ("เวลาข้อมูล", f"fetch {r['cboe_time']} (delayed ~15 นาที)",
          str(meta.get("timestamp") or "N/A"), "FlashAlpha สดกว่าถ้า timestamp ใหม่กว่า"),
-        ("Net GEX", fmt_usd(lv_cboe["net"]),
+        ("Net GEX (ทั้งชุด)", fmt_usd(lv_cboe["net"]),
          fmt_usd(meta["net"]) if meta["net"] is not None else "N/A",
-         f"ratio {meta['net']/lv_cboe['net']:.2f}×" if (meta["net"] and lv_cboe["net"]) else "—"),
+         "⚠️ strike coverage ไม่เท่ากัน — ดูแถวถัดไป"),
+        ("จำนวน strike", f"{len(ps_cboe)}", f"{len(df_fa)}",
+         "ต่างชุด → ผลรวมเทียบกันตรง ๆ ไม่ได้"),
         ("Gamma Flip", f"{lv_cboe['flip']:,.1f}" if lv_cboe["flip"] else "N/A",
          f"{meta['flip']:,.1f}" if meta["flip"] else "N/A",
          f"ห่าง {abs(lv_cboe['flip']-meta['flip']):,.1f}" if (lv_cboe["flip"] and meta["flip"]) else "—"),
@@ -679,37 +737,51 @@ def render_compare_tab(cboe_fetch):
          "✅ ตรงกัน" if (lv_cboe["put_wall"] and meta["put_wall"]
                         and lv_cboe["put_wall"] == meta["put_wall"]) else "—"),
     ]
+
+    # ── Net GEX บน strike ชุดเดียวกัน = การเทียบที่ยุติธรรมจริง ──
+    common = None
+    if not ps_cboe.empty and not df_fa.empty:
+        common = pd.merge(ps_cboe, df_fa, on="strike", suffixes=("_c", "_f"))
+        if not common.empty:
+            nc, nf = float(common["net_gex_c"].sum()), float(common["net_gex_f"].sum())
+            same_sign = (nc >= 0) == (nf >= 0)
+            rows.append((f"Net GEX ({len(common)} strike ร่วม)", fmt_usd(nc), fmt_usd(nf),
+                         ("✅ เครื่องหมายเดียวกัน" if same_sign else "❌ เครื่องหมายสวนกัน")
+                         + (f" · ratio {nf/nc:.2f}×" if nc else "")))
     st.table(pd.DataFrame(rows, columns=["รายการ", "CBOE (เดิม)", "FlashAlpha (ใหม่)", "ต่างกัน"]))
+    if meta.get("wall_source") == "derived":
+        st.caption("ℹ️ Walls ฝั่ง FlashAlpha คำนวณจาก per-strike ที่ endpoint ส่งมา "
+                   "(`/v1/exposure/gex` ไม่ส่ง wall มาตรง ๆ — ถ้าจะเอาของ vendor ต้องเรียก "
+                   "`/v1/exposure/levels` = เสียอีก 1 request)")
 
     # ── per-strike overlay + correlation ──
     verdict = []
-    if not ps_cboe.empty and not df_fa.empty:
-        m = pd.merge(ps_cboe, df_fa, on="strike", suffixes=("_cboe", "_fa"))
-        if len(m) >= 3:
-            corr = float(np.corrcoef(m["net_gex_cboe"], m["net_gex_fa"])[0, 1])
-            n1 = m["net_gex_cboe"] / (m["net_gex_cboe"].abs().max() or 1)
-            n2 = m["net_gex_fa"] / (m["net_gex_fa"].abs().max() or 1)
-            rmse = float(np.sqrt(((n1 - n2) ** 2).mean()))
-            verdict.append(f"GEX correlation = **{corr:.3f}** (normalized RMSE {rmse:.3f}, {len(m)} strikes ร่วม)")
+    if common is not None and len(common) >= 3:
+        m = common
+        for col, label in (("call_gex", "Call"), ("put_gex", "Put"), ("net_gex", "Net")):
+            a, b = m[f"{col}_c"], m[f"{col}_f"]
+            corr = float(np.corrcoef(a, b)[0, 1])
+            ratio = float(b.abs().sum() / a.abs().sum()) if a.abs().sum() else float("nan")
+            verdict.append(f"**{label} GEX** correlation `{corr:.3f}` · ขนาด FA/CBOE `{ratio:.2f}×`")
 
-            scale = 1e9 if m[["net_gex_cboe", "net_gex_fa"]].abs().values.max() >= 1e9 else 1e6
-            unit = "$Bn" if scale == 1e9 else "$M"
-            fig = go.Figure()
-            fig.add_trace(go.Bar(x=m["strike"], y=m["net_gex_cboe"] / scale,
-                                 name="CBOE (คำนวณเอง)", marker_color="#3498db"))
-            fig.add_trace(go.Bar(x=m["strike"], y=m["net_gex_fa"] / scale,
-                                 name="FlashAlpha", marker_color="#f39c12"))
-            if S_cboe:
-                fig.add_vline(x=S_cboe, line_color="#ffffff", line_dash="dash",
-                              annotation_text=f"Spot {S_cboe:,.0f}")
-            fig.update_layout(
-                template="plotly_dark", paper_bgcolor="#080d1c", plot_bgcolor="#0d1425",
-                barmode="group", title=f"Net GEX per strike — CBOE vs FlashAlpha ({r['sym']})",
-                xaxis_title="Strike", yaxis_title=f"Net GEX ({unit})",
-                font=dict(family="monospace", size=11, color="#c8d8f0"), height=460)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            verdict.append(f"strikes ร่วมมีแค่ {len(m)} จุด — เทียบ per-strike ไม่ได้ (ลองไม่ระบุ expiry)")
+        scale = 1e9 if m[["net_gex_c", "net_gex_f"]].abs().values.max() >= 1e9 else 1e6
+        unit = "$Bn" if scale == 1e9 else "$M"
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=m["strike"], y=m["net_gex_c"] / scale,
+                             name="CBOE (คำนวณเอง)", marker_color="#3498db"))
+        fig.add_trace(go.Bar(x=m["strike"], y=m["net_gex_f"] / scale,
+                             name="FlashAlpha", marker_color="#f39c12"))
+        if S_cboe:
+            fig.add_vline(x=S_cboe, line_color="#ffffff", line_dash="dash",
+                          annotation_text=f"Spot {S_cboe:,.0f}")
+        fig.update_layout(
+            template="plotly_dark", paper_bgcolor="#080d1c", plot_bgcolor="#0d1425",
+            barmode="group", title=f"Net GEX per strike — CBOE vs FlashAlpha ({r['sym']})",
+            xaxis_title="Strike", yaxis_title=f"Net GEX ({unit})",
+            font=dict(family="monospace", size=11, color="#c8d8f0"), height=460)
+        st.plotly_chart(fig, width="stretch")
+    elif common is not None:
+        verdict.append(f"strikes ร่วมมีแค่ {len(common)} จุด — เทียบ per-strike ไม่ได้ (ลองไม่ระบุ expiry)")
     elif df_fa.empty:
         verdict.append("FlashAlpha ไม่ส่ง per-strike array — เทียบได้เฉพาะระดับ summary (ดู raw JSON ใน tab GEX)")
 
@@ -722,5 +794,9 @@ def render_compare_tab(cboe_fetch):
         verdict.append(("Call Wall **ตรงกัน** — level เชื่อถือได้ทั้งสองแหล่ง" if same
                         else f"Call Wall ต่างกัน ({lv_cboe['call_wall']:,.0f} vs {meta['call_wall']:,.0f}) — เช็ค expiry filter ให้ตรงกัน"))
     st.markdown("### 🧾 สรุป\n" + "\n".join(f"- {v}" for v in verdict))
-    st.caption("หมายเหตุ: หน่วย GEX ของ vendor อาจใช้ convention ต่างกัน (per 1% vs per 1 point) — "
-               "ratio คงที่ = ต่างแค่หน่วย ไม่ใช่ข้อมูลผิด · ตัววัดที่ scale-invariant คือ correlation + ตำแหน่ง Walls/Flip")
+    st.info(
+        "**อ่านผลอย่างไร** — correlation per-strike สูง (>0.95) + Walls ตรงกัน = ใช้ CBOE ฟรีแทนได้สบาย "
+        "สำหรับงาน *หา level*\n\n"
+        "แต่ **Net GEX รวมเป็นผลต่างของเลขใหญ่สองก้อน** (Σcall − Σ|put|) — ถ้าน้ำหนัก put ต่างกันแค่ "
+        "10–15% ผลรวมพลิกเครื่องหมายได้ทั้งที่รูปทรงเหมือนกันเป๊ะ ⇒ **ห้ามใช้เครื่องหมาย Net GEX "
+        "เดี่ยว ๆ เป็น Gate ตัดสิน regime** ให้ใช้ตำแหน่งราคาเทียบ Flip + IV Rank ตามที่ SKILL v2 บอก")

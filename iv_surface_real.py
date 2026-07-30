@@ -19,7 +19,17 @@ import requests
 from datetime import datetime
 import streamlit as st
 
-import fa_gex  # GEX + FlashAlpha API + Data Comparison (tab 2–3)
+# GEX + FlashAlpha API + Data Comparison (tab 2–3)
+# บน Streamlit Cloud ตัว file-watcher ของ Streamlit อาจถอด local module ออกจาก
+# sys.modules ระหว่างที่ import ยังไม่จบ → importlib โผล่ KeyError: 'fa_gex'
+# (เกิดตอน redeploy/hot-reload) — retry ผ่าน importlib ให้จบในรอบเดียว
+try:
+    import fa_gex
+except KeyError:
+    import importlib
+    import sys as _sys
+    _sys.modules.pop("fa_gex", None)
+    fa_gex = importlib.import_module("fa_gex")
 
 # ── Page config ──────────────────────────────
 st.set_page_config(
@@ -440,7 +450,7 @@ with st.sidebar:
     # 2. โหลด Expiry List
     st.subheader("2️⃣ โหลด Expiry List")
     st.caption("ดึงข้อมูลจาก CBOE โดยตรง · delayed 15 min · ฟรี")
-    load_btn = st.button("🔄 โหลดข้อมูล", use_container_width=True)
+    load_btn = st.button("🔄 โหลดข้อมูล", width="stretch")
 
     if load_btn or st.session_state.get("loaded_sym") != sym:
         with st.spinner(f"กำลังดึงข้อมูล {sym} จาก CBOE ..."):
@@ -562,7 +572,7 @@ with st.sidebar:
         run_btn = st.button(
             "🚀 สร้าง IV Surface",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=len(selected_dates) == 0,
         )
 
@@ -648,14 +658,14 @@ with tab_iv:
         st.subheader("📈 IV Surface")
         cur_x = x_mode if "x_mode" in dir() else x_mode_cur
         fig = plot_surface(k_grid, t_grid, iv_surface, df_clean, S, sym, name, x_mode=cur_x)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         # ── Raw data ──
         with st.expander("📋 Raw Data"):
             show = df_sel[["expiry","type","strike","moneyness","iv","bid","ask","volume"]].copy()
             show["iv_%"]      = (show["iv"] * 100).round(2)
             show["moneyness"] = show["moneyness"].round(4)
-            st.dataframe(show.drop(columns=["iv"]), use_container_width=True, height=300)
+            st.dataframe(show.drop(columns=["iv"]), width="stretch", height=300)
 
         # ── Download ──
         html = fig.to_html(include_plotlyjs="cdn")
@@ -664,7 +674,7 @@ with tab_iv:
             data=html,
             file_name=f"iv_surface_{sym}_{datetime.now().strftime('%Y%m%d_%H%M')}.html",
             mime="text/html",
-            use_container_width=True,
+            width="stretch",
         )
 
     elif "df_parsed" in st.session_state:
