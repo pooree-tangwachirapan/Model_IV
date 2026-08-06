@@ -21,6 +21,9 @@
   Dealer cushion, Walls, VIX/VVIX, Vol premium, IV vs HV, VEX, DEX, Vanna/Charm, 25Δ skew,
   Term structure, 0DTE share, Expected Move 1σ, Dealer shock ±1%, Pin score
   → คำนวณอยู่ใน `snapshot.py` (ไม่มี UI) เพื่อให้สคริปต์อีเมลใช้ซ้ำได้
+- **🏛️ CME / Macro** — COT (Commitment of Traders) แยก Dealer / Asset Manager / Leveraged Money
+  พร้อม net position + Δ รายสัปดาห์ + percentile ย้อนหลัง, อัตราอ้างอิง SOFR/EFFR/BGCR/TGCR,
+  ราคา+volume futures (ES/NQ/ZQ/ZN), และอัตราดอกเบี้ยที่ตลาดคิดราคาไว้
 - **📈 IV Surface** — ของเดิม (CBOE Delayed, ฟรี)
 - **🧲 GEX** — Dealer Gamma Exposure: Net GEX / Gamma Flip / Call Wall / Put Wall
   - แหล่ง CBOE: คำนวณเอง (Γ × OI × 100 × S² × 0.01) ฟรี unlimited ใช้กับ QQQ/SPX ได้
@@ -78,8 +81,23 @@ python send_report.py --dry-run
 | ข้อมูล | แหล่ง |
 |---|---|
 | Options chain + Greeks (delta/gamma/vega/theta/rho) + OI + IV | CBOE delayed (~15 นาที) |
-| VIX / VVIX / ราคาย้อนหลัง (realized vol) | yfinance |
+| VIX / VVIX / ราคาย้อนหลัง (realized vol) / futures | yfinance |
+| COT (Commitment of Traders) | CFTC public reporting API |
+| SOFR / EFFR / BGCR / TGCR | NY Fed markets API |
 | GEX / Flip / Walls / DEX / VEX / Vanna / Charm / Pin | คำนวณเอง |
+
+### ❌ ที่ดึงอัตโนมัติไม่ได้ (และจะไม่ทำ)
+
+CME Group **ห้าม scraping ใน Data Terms of Use** และบล็อกจริง (ทุก endpoint ตอบ 403
+พร้อมข้อความห้าม) เครื่องมือเหล่านี้จึงต้องเปิดดูบนเว็บ CME เอง:
+
+| เครื่องมือของ CME | ที่เราใช้แทน |
+|---|---|
+| FedWatch Tool | implied rate จาก Fed Funds futures (front month) + EFFR จริง — บอกทิศทาง ไม่ใช่ % ต่อการประชุม |
+| Daily Volume & OI Report | volume futures จาก yfinance (ไม่มี OI ของ futures) |
+| Term SOFR Reference Rates | SOFR overnight จาก NY Fed (ต้นทางของ Term SOFR) |
+| QuikStrike Options Analytics | Greeks/GEX ที่เราคำนวณเองจาก CBOE |
+| Pace of Trading | — |
 
 ⚠️ หน่วยของ GEX/DEX/VEX เป็น convention ของระบบนี้เอง **เทียบข้ามผู้ให้บริการไม่ได้**
 ให้ดูตำแหน่ง level และการเปลี่ยนแปลง ไม่ใช่เลขดิบ

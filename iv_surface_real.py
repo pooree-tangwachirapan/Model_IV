@@ -35,6 +35,7 @@ def _load_local(mod_name):
 
 fa_gex    = _load_local("fa_gex")
 dashboard = _load_local("dashboard")
+cme_tab   = _load_local("cme_tab")
 
 # ── Page config ──────────────────────────────
 st.set_page_config(
@@ -591,12 +592,15 @@ if "S" not in st.session_state:
     st.info("👈 กด **โหลดข้อมูล** ใน Sidebar เพื่อเริ่ม")
     st.stop()
 
-# ── Tabs: Dashboard / IV Surface (เดิม) / GEX / เทียบข้อมูล ──
-tab_dash, tab_iv, tab_gex, tab_cmp = st.tabs(
-    ["📋 Dashboard", "📈 IV Surface", "🧲 GEX", "⚖️ เทียบข้อมูล"])
+# ── Tabs: Dashboard / IV Surface (เดิม) / GEX / CME / เทียบข้อมูล ──
+tab_dash, tab_iv, tab_gex, tab_cme, tab_cmp = st.tabs(
+    ["📋 Dashboard", "📈 IV Surface", "🧲 GEX", "🏛️ CME / Macro", "⚖️ เทียบข้อมูล"])
 
 with tab_dash:
     dashboard.render_dashboard_tab(sym=sym, name=name)
+
+with tab_cme:
+    cme_tab.render_cme_tab()
 
 with tab_iv:
     # Debug: แสดง CBOE columns จริงที่ได้รับ

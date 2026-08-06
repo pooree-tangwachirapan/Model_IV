@@ -28,7 +28,76 @@ from dashboard import STATUS_COLOR, render_text
 BG, CARD, LINE, TXT, DIM = "#0b1220", "#111d33", "#1d2f4f", "#e8f2ff", "#7e93b5"
 
 
-def build_html(snaps: list[dict]) -> str:
+def build_cme_html(cme: dict) -> str:
+    """บล็อก CME/COT สำหรับอีเมล — inline style ล้วน"""
+    if not cme:
+        return ""
+    parts = []
+
+    for s in cme.get("cot", []):
+        import cme_reports as cr
+        rows = []
+        for r in cr.cot_rows(s):
+            col = {"NET LONG": "#2ecc71", "NET LONG ⚠": "#f39c12",
+                   "NET SHORT": "#e74c3c", "NET SHORT ⚠": "#e67e22"}.get(r["status"], DIM)
+            note = r["note"].replace("**", "")
+            rows.append(
+                f'<tr><td style="padding:7px 10px;border-bottom:1px solid {LINE};'
+                f'color:#8aadee;font-size:12px;font-weight:600;white-space:nowrap">{r["label"]}</td>'
+                f'<td style="padding:7px 10px;border-bottom:1px solid {LINE};color:{TXT};'
+                f'font-family:monospace;font-size:14px;font-weight:600;text-align:right">{r["value"]}</td>'
+                f'<td style="padding:7px 10px;border-bottom:1px solid {LINE};text-align:center">'
+                f'<span style="color:{col};border:1px solid {col};border-radius:4px;padding:2px 7px;'
+                f'font-size:10px;font-weight:700;white-space:nowrap">{r["status"]}</span></td>'
+                f'<td style="padding:7px 10px;border-bottom:1px solid {LINE};color:{DIM};'
+                f'font-size:11px;line-height:1.4">{note}</td></tr>')
+        oi = f'{s["open_interest"]:,}'
+        chg = s.get("oi_change")
+        parts.append(
+            f'<div style="padding:0 10px 8px"><span style="color:{TXT};font-size:15px;'
+            f'font-weight:700">{s["label"]}</span>'
+            f'<div style="color:{DIM};font-size:11px;margin-top:3px">'
+            f'report {s["date"]:%Y-%m-%d} · OI {oi}'
+            + (f' ({chg:+,})' if chg is not None else '') + '</div></div>'
+            f'<table style="width:100%;border-collapse:collapse;margin-bottom:14px">'
+            f'{"".join(rows)}</table>')
+
+    rates = {k: v for k, v in cme.get("rates", {}).items() if isinstance(v, dict)}
+    p = cme.get("policy", {})
+    chips = []
+    for k, v in rates.items():
+        chips.append(f'<span style="display:inline-block;border:1px solid {LINE};'
+                     f'border-radius:5px;padding:5px 10px;margin:0 6px 6px 0">'
+                     f'<span style="color:{DIM};font-size:10px">{k.upper()}</span> '
+                     f'<span style="color:{TXT};font-family:monospace;font-size:13px;'
+                     f'font-weight:600">{v["rate"]:.2f}%</span></span>')
+    if p.get("implied") is not None:
+        note = (p.get("note") or "").replace("**", "")
+        chips.append(f'<span style="display:inline-block;border:1px solid {LINE};'
+                     f'border-radius:5px;padding:5px 10px;margin:0 6px 6px 0">'
+                     f'<span style="color:{DIM};font-size:10px">FF futures implied</span> '
+                     f'<span style="color:{TXT};font-family:monospace;font-size:13px;'
+                     f'font-weight:600">{p["implied"]:.3f}%</span>'
+                     + (f' <span style="color:{DIM};font-size:10px">'
+                        f'({p["spread_bp"]:+.1f}bp · {note})</span>'
+                        if p.get("spread_bp") is not None else '') + '</span>')
+    if chips:
+        parts.append(f'<div style="padding:4px 10px 10px">{"".join(chips)}</div>')
+
+    if not parts:
+        return ""
+    return (f'<div style="background:{CARD};border:1px solid {LINE};border-radius:8px;'
+            f'padding:14px 8px;margin-bottom:20px">'
+            f'<div style="color:{TXT};font-size:17px;font-weight:700;padding:0 10px 10px">'
+            f'🏛️ CME / Macro</div>{"".join(parts)}'
+            f'<div style="color:{DIM};font-size:10.5px;padding:6px 10px 0;'
+            f'border-top:1px solid {LINE};line-height:1.55">'
+            f'COT จาก CFTC (รายสัปดาห์ · ช้า 3 วัน) · อัตราจาก NY Fed · futures จาก yfinance<br>'
+            f'เครื่องมือของ CME เอง (FedWatch / QuikStrike / Daily Volume Report / Term SOFR) '
+            f'ดึงอัตโนมัติไม่ได้ — CME ห้าม scraping ใน Terms of Use</div></div>')
+
+
+def build_html(snaps: list[dict], cme: dict | None = None) -> str:
     """HTML แบบ table + inline style — mail client ส่วนใหญ่ไม่รองรับ CSS grid/flex"""
     blocks = []
     for s in snaps:
@@ -80,6 +149,7 @@ def build_html(snaps: list[dict]) -> str:
         f'<div style="color:{DIM};font-size:12px;margin-bottom:18px">'
         f'{datetime.now():%Y-%m-%d %H:%M} · CBOE delayed (~15 นาที) + yfinance</div>'
         f'{"".join(blocks)}'
+        f'{build_cme_html(cme) if cme else ""}'
         f'<div style="color:{DIM};font-size:11px;line-height:1.6;border-top:1px solid {LINE};'
         f'padding-top:12px">'
         f'⚠️ หน่วยของ GEX / DEX / VEX เป็น convention ของระบบนี้เอง เทียบข้ามผู้ให้บริการไม่ได้ — '
@@ -185,6 +255,11 @@ def main() -> int:
     ap.add_argument("--test-smtp", action="store_true",
                     help="ทดสอบล็อกอิน + ส่งเมลสั้น ๆ อย่างเดียว (ข้ามการคำนวณ) — ใช้ debug")
     ap.add_argument("--symbols", default=os.environ.get("SYMBOLS", "QQQ"))
+    ap.add_argument("--no-cme", action="store_true",
+                    help="ไม่ต้องแนบส่วน CME/COT")
+    ap.add_argument("--cot-markets",
+                    default=os.environ.get("COT_MARKETS", "NASDAQ-100 (รวม),VIX Futures"),
+                    help="ตลาด COT คั่นด้วย , (ดูรายชื่อใน cme_reports.COT_MARKETS)")
     args = ap.parse_args()
 
     if args.test_smtp:
@@ -211,8 +286,28 @@ def main() -> int:
         print("คำนวณไม่สำเร็จสักตัว — ไม่ส่งเมล", file=sys.stderr)
         return 1
 
-    html = build_html(snaps)
+    # ── CME/Macro (COT + rates + futures) — ล้มเหลวได้ ไม่ทำให้เมลไม่ถูกส่ง ──
+    cme = None
+    if not args.no_cme:
+        try:
+            import cme_reports
+            mkts = [m.strip() for m in args.cot_markets.split(",") if m.strip()]
+            cme = cme_reports.build_cme_snapshot(mkts, weeks=52)
+            print(f"  CME: COT {len(cme.get('cot', []))} ตลาด · "
+                  f"rates {len([1 for v in cme.get('rates', {}).values() if isinstance(v, dict)])}")
+        except Exception as e:
+            print(f"  CME: ข้ามไป ({type(e).__name__}: {e})", file=sys.stderr)
+
+    html = build_html(snaps, cme)
     text = "\n\n".join(render_text(s) for s in snaps)
+    if cme:
+        try:
+            import cme_reports
+            lines = cme_reports.summary_lines(cme)
+            if lines:
+                text += "\n\n" + "=" * 78 + "\nCME / MACRO\n" + "=" * 78 + "\n" + "\n".join(lines)
+        except Exception:
+            pass
     tag = "⚠️ " if failed else ""
     head = ok[0]
     subject = (f"{tag}Signal Recap {', '.join(syms)} — "
