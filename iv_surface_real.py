@@ -23,13 +23,18 @@ import streamlit as st
 # บน Streamlit Cloud ตัว file-watcher ของ Streamlit อาจถอด local module ออกจาก
 # sys.modules ระหว่างที่ import ยังไม่จบ → importlib โผล่ KeyError: 'fa_gex'
 # (เกิดตอน redeploy/hot-reload) — retry ผ่าน importlib ให้จบในรอบเดียว
-try:
-    import fa_gex
-except KeyError:
+def _load_local(mod_name):
     import importlib
     import sys as _sys
-    _sys.modules.pop("fa_gex", None)
-    fa_gex = importlib.import_module("fa_gex")
+    try:
+        return importlib.import_module(mod_name)
+    except KeyError:
+        _sys.modules.pop(mod_name, None)
+        return importlib.import_module(mod_name)
+
+
+fa_gex    = _load_local("fa_gex")
+dashboard = _load_local("dashboard")
 
 # ── Page config ──────────────────────────────
 st.set_page_config(
@@ -198,8 +203,13 @@ def parse_options(df_raw: pd.DataFrame, S: float) -> pd.DataFrame:
                                 "ImpliedVolatility", "theo_volatility"] if c in df.columns), None)
     if iv_col:
         df["iv"] = pd.to_numeric(df[iv_col], errors="coerce")
-        # normalize: ถ้า > 5 แสดงว่าเป็น % → หาร 100
-        if df["iv"].dropna().max() > 5:
+        # normalize เป็นทศนิยม (0.22 = 22%)
+        # ห้ามใช้ max เป็นเกณฑ์! deep-OTM ระยะสั้นมี IV เกิน 5.0 (500%) ได้จริง
+        # ถ้าใช้ max จะเข้าใจผิดว่าเป็นหน่วย % แล้วหาร 100 ทั้งกระดาน → IV เพี้ยน 100 เท่า
+        # (บั๊กนี้ยิงเป็นบางวัน แล้วแต่ว่ามีสัญญาหางยาวโผล่มามั้ย — ตรวจยากมาก)
+        # ใช้ median แทน: รายงานเป็น % → median ~20 / เป็นทศนิยม → median ~0.2
+        iv_med = df["iv"].dropna().median()
+        if pd.notna(iv_med) and iv_med > 5:
             df["iv"] = df["iv"] / 100.0
     else:
         st.warning("ไม่พบ IV column — จะใช้ค่า 0 (ต้องคำนวณเอง)")
@@ -581,8 +591,12 @@ if "S" not in st.session_state:
     st.info("👈 กด **โหลดข้อมูล** ใน Sidebar เพื่อเริ่ม")
     st.stop()
 
-# ── Tabs: IV Surface (เดิม) / GEX / เทียบข้อมูล ──
-tab_iv, tab_gex, tab_cmp = st.tabs(["📈 IV Surface", "🧲 GEX", "⚖️ เทียบข้อมูล"])
+# ── Tabs: Dashboard / IV Surface (เดิม) / GEX / เทียบข้อมูล ──
+tab_dash, tab_iv, tab_gex, tab_cmp = st.tabs(
+    ["📋 Dashboard", "📈 IV Surface", "🧲 GEX", "⚖️ เทียบข้อมูล"])
+
+with tab_dash:
+    dashboard.render_dashboard_tab(sym=sym, name=name)
 
 with tab_iv:
     # Debug: แสดง CBOE columns จริงที่ได้รับ

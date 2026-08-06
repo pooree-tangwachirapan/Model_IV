@@ -128,8 +128,11 @@ def parse_cboe_for_gex(df_raw: pd.DataFrame, S: float) -> pd.DataFrame:
 
     df["open_interest"] = _safe_num(df, ["open_interest", "openInterest", "oi"], 0).fillna(0)
     df["gamma"] = _safe_num(df, ["gamma", "Gamma"])
-    df["iv"]    = _safe_num(df, ["iv", "IV", "implied_volatility"])
-    if df["iv"].dropna().max() and df["iv"].dropna().max() > 5:
+    df["iv"] = _safe_num(df, ["iv", "IV", "implied_volatility"])
+    # ใช้ median ไม่ใช่ max — deep-OTM ระยะสั้น IV เกิน 5.0 (500%) ได้จริง
+    # ถ้าใช้ max เป็นเกณฑ์จะหาร 100 ทั้งกระดานผิด ๆ ทำให้ gamma/flip เพี้ยนตามไปด้วย
+    iv_med = df["iv"].dropna().median()
+    if pd.notna(iv_med) and iv_med > 5:
         df["iv"] = df["iv"] / 100.0
 
     # เทียบเป็น "วันที่" ไม่ใช่ datetime — ไม่งั้น expiry วันนี้ติดลบตอนบ่าย

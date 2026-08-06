@@ -14,9 +14,13 @@
 
 ═══════════════════════════════════════════
 
-## 🧲 Tab GEX + ⚖️ Tab เทียบข้อมูล (ใหม่)
+## 📋 Tab Dashboard + 🧲 GEX + ⚖️ เทียบข้อมูล
 
-แอปมี 3 tabs:
+แอปมี 4 tabs:
+- **📋 Dashboard** — Signal Recap 17 ตัวหน้าเดียว: Flip distance, Level stack (flip/Max Pain/top OI),
+  Dealer cushion, Walls, VIX/VVIX, Vol premium, IV vs HV, VEX, DEX, Vanna/Charm, 25Δ skew,
+  Term structure, 0DTE share, Expected Move 1σ, Dealer shock ±1%, Pin score
+  → คำนวณอยู่ใน `snapshot.py` (ไม่มี UI) เพื่อให้สคริปต์อีเมลใช้ซ้ำได้
 - **📈 IV Surface** — ของเดิม (CBOE Delayed, ฟรี)
 - **🧲 GEX** — Dealer Gamma Exposure: Net GEX / Gamma Flip / Call Wall / Put Wall
   - แหล่ง CBOE: คำนวณเอง (Γ × OI × 100 × S² × 0.01) ฟรี unlimited ใช้กับ QQQ/SPX ได้
@@ -41,3 +45,41 @@ FLASHALPHA_API_KEY = "your-key"
 pip install -r requirements.txt
 streamlit run iv_surface_real.py
 ```
+
+## 📧 อีเมลรายวันอัตโนมัติ (GitHub Actions — ฟรี)
+
+`send_report.py` สร้าง Signal Recap แล้วส่งเข้าเมล · `.github/workflows/daily-report.yml`
+ตั้ง cron จันทร์–ศุกร์ 13:00 UTC (= 09:00 ET ก่อนตลาดเปิด = 20:00 ไทย)
+
+**ทดสอบก่อนโดยไม่ส่งจริง:**
+```
+python send_report.py --dry-run
+```
+จะได้ไฟล์ `preview.html` เปิดดูหน้าตาเมลได้
+
+**ตั้งค่าให้ส่งจริง** — ไปที่ repo → Settings → Secrets and variables → Actions → New repository secret
+เพิ่ม 3 ตัวนี้ (ค่าที่เหลือมี default ให้แล้ว):
+
+| Secret | ค่า |
+|---|---|
+| `SMTP_USER` | อีเมล Gmail ผู้ส่ง |
+| `SMTP_PASS` | **App Password 16 หลัก** (ไม่ใช่รหัสผ่าน Gmail ปกติ) |
+| `MAIL_TO` | ผู้รับ คั่นด้วย `,` ได้หลายคน |
+
+วิธีสร้าง App Password: Google Account → Security → เปิด 2-Step Verification → App passwords
+→ สร้างใหม่ → คัดลอก 16 หลักมาใส่ `SMTP_PASS`
+
+⚠️ **อย่าใส่รหัสผ่านลงในโค้ดหรือ commit เด็ดขาด** — repo นี้เป็น public
+
+กดรันเองได้ที่แท็บ **Actions → Daily Signal Recap → Run workflow** (เลือก symbols ได้)
+
+## 📊 แหล่งข้อมูล (ฟรีทั้งหมด)
+
+| ข้อมูล | แหล่ง |
+|---|---|
+| Options chain + Greeks (delta/gamma/vega/theta/rho) + OI + IV | CBOE delayed (~15 นาที) |
+| VIX / VVIX / ราคาย้อนหลัง (realized vol) | yfinance |
+| GEX / Flip / Walls / DEX / VEX / Vanna / Charm / Pin | คำนวณเอง |
+
+⚠️ หน่วยของ GEX/DEX/VEX เป็น convention ของระบบนี้เอง **เทียบข้ามผู้ให้บริการไม่ได้**
+ให้ดูตำแหน่ง level และการเปลี่ยนแปลง ไม่ใช่เลขดิบ
