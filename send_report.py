@@ -113,11 +113,22 @@ def send(html: str, text: str, subject: str) -> None:
     if not to:
         raise SystemExit("MAIL_TO ไม่ถูกต้อง")
 
-    if " " in pw:
-        pw = pw.replace(" ", "")          # Google โชว์ app password เป็น 4 กลุ่มมีเว้นวรรค
-    if len(pw) != 16:
-        print(f"⚠️  SMTP_PASS ยาว {len(pw)} ตัว — App Password ของ Google ยาว 16 ตัว "
-              f"(ถ้าใช้รหัสผ่าน Gmail ปกติ Google จะปฏิเสธ)", file=sys.stderr)
+    pw = pw.replace(" ", "").replace(" ", "")   # Google โชว์เป็น 4 กลุ่มมีเว้นวรรค
+    gmail = "gmail" in _env("SMTP_HOST", "smtp.gmail.com")
+
+    # ตรวจก่อนยิง — บอกสาเหตุได้ตรงกว่ารอ error 535 จาก server
+    if "@" not in user:
+        raise SystemExit(
+            f"SMTP_USER = {user!r} ไม่ใช่อีเมลเต็ม\n"
+            "  ต้องใส่ทั้ง @gmail.com เช่น you@gmail.com ไม่ใช่แค่ you")
+    if gmail and len(pw) != 16:
+        print(f"⚠️  SMTP_PASS ยาว {len(pw)} ตัวอักษร แต่ App Password ของ Google ยาว 16 ตัวพอดี\n"
+              f"   ถ้าใช้รหัสผ่าน Gmail ปกติ Google จะปฏิเสธด้วย error 535 แน่นอน",
+              file=sys.stderr, flush=True)
+    elif gmail and not pw.isalpha():
+        print("⚠️  App Password ของ Google เป็นตัวอักษร a-z ล้วน 16 ตัว "
+              "แต่ค่าที่ใส่มามีตัวเลข/สัญลักษณ์ปน — เช็คว่าคัดลอกถูกตัวมั้ย",
+              file=sys.stderr, flush=True)
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -128,26 +139,61 @@ def send(html: str, text: str, subject: str) -> None:
 
     host = _env("SMTP_HOST", "smtp.gmail.com")
     port = int(_env("SMTP_PORT", "587"))
-    print(f"เชื่อมต่อ {host}:{port} เป็น {user} → ส่งหา {', '.join(to)}")
+    # flush เพื่อให้บรรทัดนี้ออกก่อน error เสมอ (GitHub Actions สลับ stdout/stderr ได้)
+    print(f"เชื่อมต่อ {host}:{port} · ผู้ส่ง {user} · ผู้รับ {', '.join(to)} · "
+          f"รหัสยาว {len(pw)} ตัว", flush=True)
     try:
         with smtplib.SMTP(host, port, timeout=45) as srv:
             srv.starttls()
             srv.login(user, pw)
             srv.send_message(msg)
     except smtplib.SMTPAuthenticationError as e:
+        detail = e.smtp_error.decode("utf-8", "replace") if isinstance(e.smtp_error, bytes) \
+            else str(e.smtp_error)
+        low = detail.lower()
+        if "application-specific password" in low or "app password" in low:
+            why = ("👉 Google บอกตรง ๆ ว่าต้องใช้ **App Password** — ค่าที่ใส่คือรหัสผ่าน Gmail ปกติ\n"
+                   "   สร้างที่ Google Account → Security → 2-Step Verification → App passwords")
+        elif "username and password not accepted" in low:
+            why = ("👉 user หรือ password ไม่ตรง — สาเหตุที่เจอบ่อยเรียงตามความน่าจะเป็น:\n"
+                   "   1) SMTP_PASS เป็นรหัสผ่าน Gmail ปกติ ไม่ใช่ App Password 16 ตัว\n"
+                   "   2) App Password สร้างจาก Google account คนละอันกับ SMTP_USER\n"
+                   "   3) App Password ถูกลบ/เพิกถอนไปแล้ว → สร้างใหม่\n"
+                   "   4) คัดลอกไม่ครบ (ต้อง 16 ตัว ไม่นับเว้นวรรค)")
+        elif "smtp not enabled" in low or "not enabled for smtp" in low or "disabled" in low:
+            why = "👉 บัญชีนี้ถูกปิดการใช้ SMTP (Google Workspace ต้องให้ admin เปิดให้)"
+        else:
+            why = "👉 ดูข้อความจาก Google ด้านบนประกอบ"
         raise SystemExit(
-            f"เข้าสู่ระบบไม่ผ่าน ({e.smtp_code}) — เช็ค 2 อย่าง:\n"
-            "  1) SMTP_PASS ต้องเป็น App Password 16 หลัก ไม่ใช่รหัสผ่าน Gmail ปกติ\n"
-            "  2) บัญชีต้องเปิด 2-Step Verification ก่อนถึงจะสร้าง App Password ได้")
-    print(f"✅ ส่งแล้ว → {', '.join(to)}")
+            f"❌ Gmail ปฏิเสธการเข้าสู่ระบบ (SMTP {e.smtp_code})\n\n"
+            f"ข้อความจาก Google:\n  {detail}\n\n{why}")
+    except smtplib.SMTPException as e:
+        raise SystemExit(f"❌ ส่งไม่สำเร็จ: {type(e).__name__}: {e}")
+    except (OSError, TimeoutError) as e:
+        raise SystemExit(
+            f"❌ ต่อ {host}:{port} ไม่ได้ — {type(e).__name__}: {e}\n"
+            "👉 มักเกิดจากเน็ตออฟฟิศ/ไฟร์วอลล์บล็อก outbound port 587\n"
+            "   ลองรันบน GitHub Actions แทน (เน็ตของ GitHub ไม่บล็อก) "
+            "หรือใช้ SMTP_PORT=465 ถ้าเครือข่ายอนุญาต")
+    print(f"✅ ส่งแล้ว → {', '.join(to)}", flush=True)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true",
                     help="คำนวณและเขียนไฟล์ preview.html แต่ไม่ส่งเมล")
+    ap.add_argument("--test-smtp", action="store_true",
+                    help="ทดสอบล็อกอิน + ส่งเมลสั้น ๆ อย่างเดียว (ข้ามการคำนวณ) — ใช้ debug")
     ap.add_argument("--symbols", default=os.environ.get("SYMBOLS", "QQQ"))
     args = ap.parse_args()
+
+    if args.test_smtp:
+        send("<html><body style='font-family:sans-serif'>"
+             "<h3>✅ SMTP ใช้งานได้</h3><p>ถ้าเห็นเมลนี้ แปลว่าตั้งค่าถูกแล้ว "
+             "รายงานจริงจะส่งตามเวลาที่ตั้งใน workflow</p></body></html>",
+             "SMTP ใช้งานได้ — ตั้งค่าถูกแล้ว",
+             "[TEST] Model_IV — ทดสอบการส่งเมล")
+        return 0
 
     syms = [s.strip() for s in args.symbols.split(",") if s.strip()]
     snaps, failed = [], []
