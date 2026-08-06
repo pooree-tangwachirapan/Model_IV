@@ -90,15 +90,34 @@ def build_html(snaps: list[dict]) -> str:
         f'</div></div></body></html>')
 
 
+def _env(name: str, default: str = "") -> str:
+    """
+    อ่าน env แบบถือว่า "ค่าว่าง = ไม่ได้ตั้ง"
+    สำคัญบน GitHub Actions: secret ที่ไม่มีอยู่จะถูกส่งมาเป็นสตริงว่าง ไม่ใช่ตัวแปรที่หายไป
+    → os.environ.get(name, default) จะคืน "" ไม่ใช่ default
+    """
+    return (os.environ.get(name) or "").strip() or default
+
+
 def send(html: str, text: str, subject: str) -> None:
-    user = os.environ.get("SMTP_USER", "").strip()
-    pw = os.environ.get("SMTP_PASS", "").strip()
-    to = [a.strip() for a in os.environ.get("MAIL_TO", user).split(",") if a.strip()]
+    user = _env("SMTP_USER")
+    pw = _env("SMTP_PASS")
     if not user or not pw:
-        raise SystemExit("ยังไม่ได้ตั้ง SMTP_USER / SMTP_PASS "
-                         "(ใส่ใน GitHub Secrets หรือ env ในเครื่อง)")
+        raise SystemExit(
+            "ยังไม่ได้ตั้ง SMTP_USER / SMTP_PASS\n"
+            "  GitHub: repo → Settings → Secrets and variables → Actions\n"
+            "  ในเครื่อง: set SMTP_USER=you@gmail.com และ SMTP_PASS=<app password 16 หลัก>")
+
+    # ไม่ตั้ง MAIL_TO = ส่งหาตัวเอง (กรณีใช้บ่อยสุด)
+    to = [a.strip() for a in _env("MAIL_TO", user).split(",") if a.strip()]
     if not to:
-        raise SystemExit("ยังไม่ได้ตั้ง MAIL_TO")
+        raise SystemExit("MAIL_TO ไม่ถูกต้อง")
+
+    if " " in pw:
+        pw = pw.replace(" ", "")          # Google โชว์ app password เป็น 4 กลุ่มมีเว้นวรรค
+    if len(pw) != 16:
+        print(f"⚠️  SMTP_PASS ยาว {len(pw)} ตัว — App Password ของ Google ยาว 16 ตัว "
+              f"(ถ้าใช้รหัสผ่าน Gmail ปกติ Google จะปฏิเสธ)", file=sys.stderr)
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -107,13 +126,20 @@ def send(html: str, text: str, subject: str) -> None:
     msg.set_content(text)
     msg.add_alternative(html, subtype="html")
 
-    host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-    port = int(os.environ.get("SMTP_PORT", "587"))
-    with smtplib.SMTP(host, port, timeout=45) as srv:
-        srv.starttls()
-        srv.login(user, pw)
-        srv.send_message(msg)
-    print(f"ส่งแล้ว → {', '.join(to)}")
+    host = _env("SMTP_HOST", "smtp.gmail.com")
+    port = int(_env("SMTP_PORT", "587"))
+    print(f"เชื่อมต่อ {host}:{port} เป็น {user} → ส่งหา {', '.join(to)}")
+    try:
+        with smtplib.SMTP(host, port, timeout=45) as srv:
+            srv.starttls()
+            srv.login(user, pw)
+            srv.send_message(msg)
+    except smtplib.SMTPAuthenticationError as e:
+        raise SystemExit(
+            f"เข้าสู่ระบบไม่ผ่าน ({e.smtp_code}) — เช็ค 2 อย่าง:\n"
+            "  1) SMTP_PASS ต้องเป็น App Password 16 หลัก ไม่ใช่รหัสผ่าน Gmail ปกติ\n"
+            "  2) บัญชีต้องเปิด 2-Step Verification ก่อนถึงจะสร้าง App Password ได้")
+    print(f"✅ ส่งแล้ว → {', '.join(to)}")
 
 
 def main() -> int:
