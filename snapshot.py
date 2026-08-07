@@ -455,5 +455,6 @@ def build_snapshot(sym: str = "QQQ", hv_ticker: str | None = None,
         "rows": rows, "levels": lv, "per_strike": ps,
         "macro": macro, "rv": rv, "atm_iv": iv_atm, "max_pain": mp,
         "expected_move": em, "skew": sk, "term": ts, "pin": pin,
+        "zero_dte": z0,          # gate.py ใช้ — เดิมคำนวณแล้วโผล่แค่ใน rows
         "n_contracts": len(df), "error": None,
     }

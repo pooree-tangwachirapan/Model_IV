@@ -16,11 +16,13 @@
 
 ## 📋 Tab Dashboard + 🧲 GEX + ⚖️ เทียบข้อมูล
 
-แอปมี 4 tabs:
+แอปมี 6 tabs:
 - **📋 Dashboard** — Signal Recap 17 ตัวหน้าเดียว: Flip distance, Level stack (flip/Max Pain/top OI),
   Dealer cushion, Walls, VIX/VVIX, Vol premium, IV vs HV, VEX, DEX, Vanna/Charm, 25Δ skew,
   Term structure, 0DTE share, Expected Move 1σ, Dealer shock ±1%, Pin score
   → คำนวณอยู่ใน `snapshot.py` (ไม่มี UI) เพื่อให้สคริปต์อีเมลใช้ซ้ำได้
+- **🎯 Cockpit** — แปลง 17 สัญญาณให้เหลือคำตอบเดียว: *วันนี้ fade กำแพงได้ไหม ใส่กี่สัญญา*
+  → ตรรกะอยู่ใน `gate.py` (ไม่มี UI) แบบเดียวกัน เพื่อให้หน้าจอกับอีเมลตัดสินตรงกันเสมอ
 - **🏛️ CME / Macro** — COT (Commitment of Traders) แยก Dealer / Asset Manager / Leveraged Money
   พร้อม net position + Δ รายสัปดาห์ + percentile ย้อนหลัง, อัตราอ้างอิง SOFR/EFFR/BGCR/TGCR,
   ราคา+volume futures (ES/NQ/ZQ/ZN), และอัตราดอกเบี้ยที่ตลาดคิดราคาไว้
@@ -75,6 +77,31 @@ python send_report.py --dry-run
 ⚠️ **อย่าใส่รหัสผ่านลงในโค้ดหรือ commit เด็ดขาด** — repo นี้เป็น public
 
 กดรันเองได้ที่แท็บ **Actions → Daily Signal Recap → Run workflow** (เลือก symbols ได้)
+
+### 🎯 บล็อก "วันนี้เข้าได้ไหม" ในเมล
+
+เมลรายวันขึ้นต้นด้วยคำตัดสินจาก `gate.py` และหัวเรื่องขึ้นต้นด้วย **ARMED / WATCH / STAND DOWN**
+เพื่อให้ตัดสินใจได้จากล็อกสกรีนมือถือโดยไม่ต้องเปิดอ่าน
+
+| verdict | แปลว่า |
+|---|---|
+| ⛔ `STAND_DOWN` | ประตูแข็งตกอย่างน้อย 1 ข้อ — อย่า fade วันนี้ |
+| 👀 `WATCH` | ผ่านประตูแล้วแต่ราคายังไม่ถึงขอบกำแพง (หรือเรขาคณิตไม่ถึง 2R) |
+| 🎯 `ARMED` | โครงสร้างเข้าเกณฑ์ + ราคาชิดกำแพง |
+
+⚠️ **ARMED ไม่ใช่คำสั่งให้เข้า** — เครื่องตัดสินได้เฉพาะประตูที่วัดจากข้อมูลได้
+ประตูที่เหลือ (วันข่าว / bid-ask / เขียนจุด invalidate / ลิมิตรายวัน) ยังต้องยืนยันเอง
+และเมลนี้ใช้ CBOE delayed ~15 นาที + OI ที่อัปเดตข้ามคืน
+
+**แจ้งเตือนระหว่างวันเฉพาะตอน ARMED** — `.github/workflows/armed-alert.yml`
+ยิง 10:35 / 12:30 ET (EDT) แล้วเงียบถ้าไม่มีอะไร (`--armed-only`)
+เปิดใช้เมื่อพร้อมรับข้อจำกัด: **cron ของ GitHub Actions ดีเลย์ได้ 5–30 นาที และข้ามรอบได้**
+→ ใช้เป็นตัวเตือนให้ไปดู ไม่ใช่ตัวจับจังหวะเข้า
+
+```
+python send_report.py --dry-run --no-cme      # ดูหน้าตาบล็อก gate
+python send_report.py --dry-run --armed-only  # ทดสอบว่าเงียบตอนไม่ ARMED
+```
 
 ## 📊 แหล่งข้อมูล (ฟรีทั้งหมด)
 
