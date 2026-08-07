@@ -71,6 +71,29 @@ def zone_geometry(spot, put_wall, call_wall, flip=None) -> dict | None:
     return out
 
 
+def zone_problem(spot, put_wall, call_wall) -> tuple[str, bool]:
+    """
+    บอกให้ชัดว่า "ไม่มีโซน" เพราะอะไร — คืน (เหตุผล, เป็นปัญหาข้อมูลไหม)
+
+    ทำไมต้องแยก: "ดึงข้อมูลมาไม่ครบ" กับ "กำแพงกลับหัวจริง ๆ" ให้ verdict เดียวกันคือห้ามเทรด
+    แต่สิ่งที่ต้องทำต่อคนละเรื่อง — อันแรกต้องไปไล่หาว่า pipeline พังตรงไหน
+    อันหลังคือสภาพตลาดที่ถูกต้องแล้ว ไม่ต้องแก้อะไร
+    """
+    if spot is None:
+        return "ไม่มีราคา spot — ดึงกระดานไม่สำเร็จ", True
+    miss = [n for n, v in (("Put Wall", put_wall), ("Call Wall", call_wall)) if v is None]
+    if len(miss) == 2:
+        return ("หากำแพงไม่เจอทั้งสองฝั่ง — กระดานว่างหรือดึงข้อมูลมาไม่ครบ "
+                "ไม่ใช่สภาพตลาด ให้ไปเช็คว่า CBOE ตอบอะไรมา", True)
+    if miss:
+        return (f"หา {miss[0]} ไม่เจอ — ไม่มี OI ฝั่งนั้นเลยในหน้าต่างรอบ spot "
+                "หรือดึงข้อมูลมาไม่ครบ", True)
+    if call_wall <= put_wall:
+        return (f"Call Wall {call_wall:,.2f} ไม่ได้อยู่เหนือ Put Wall {put_wall:,.2f} — "
+                "กำแพงกลับหัว ไม่มีช่องให้ราคาถูกดูดกลับ · นี่คือสภาพตลาดจริง ไม่ใช่ข้อมูลพัง", False)
+    return "ไม่ทราบสาเหตุ", True
+
+
 def build_plan(spot, z, put_wall, call_wall, em, max_pain=None) -> dict | None:
     """
     แผนไม้ในหน่วยราคาของ underlying — ยังไม่ใช่ราคา option
@@ -108,11 +131,12 @@ def evaluate(snap: dict) -> dict:
         "symbol": snap.get("symbol"), "spot": snap.get("spot"), "asof": snap.get("asof"),
         "verdict": "STAND_DOWN", "headline": "", "reason": "",
         "hard": [], "soft": [], "manual": list(MANUAL_GATES),
-        "zone": None, "plan": None, "cockpit_query": "",
+        "zone": None, "plan": None, "cockpit_query": "", "data_issue": False,
     }
     if snap.get("error"):
         out["headline"] = "ไม่มีข้อมูลพอจะตัดสิน"
         out["reason"] = str(snap["error"])
+        out["data_issue"] = True
         return out
 
     lv = snap.get("levels") or {}
@@ -125,12 +149,16 @@ def evaluate(snap: dict) -> dict:
 
     # ── ประตูแข็ง: ตกข้อเดียว = STAND_DOWN ──
     H = out["hard"]
-    H.append(_g("ข้อมูลกำแพง", z is not None,
-                f"put {pw:,.2f} / call {cw:,.2f}" if z else "ไม่ครบ",
+    # โชว์ทีละฝั่ง — เห็นทันทีว่าฝั่งไหนหาย ไม่ใช่แค่ "ไม่ครบ"
+    walls = ((f"put {pw:,.2f}" if pw is not None else "put —") + " / " +
+             (f"call {cw:,.2f}" if cw is not None else "call —"))
+    H.append(_g("ข้อมูลกำแพง", z is not None, walls,
                 "ต้องมี Put Wall < Call Wall ถึงจะมีโซนให้ fade"))
     if z is None:
-        out["headline"] = "ไม่มีโซนให้ fade"
-        out["reason"] = "หา Put/Call Wall จากกระดานนี้ไม่ได้ หรือ Call Wall ต่ำกว่า Put Wall"
+        why, is_data = zone_problem(S, pw, cw)
+        out["data_issue"] = is_data
+        out["headline"] = "ข้อมูลไม่พอจะตัดสิน" if is_data else "ไม่มีโซนให้ fade"
+        out["reason"] = why
         return out
 
     H.append(_g("ราคาอยู่ในโซน", z["inside"], f"{z['pct']*100:.0f}% ของโซน",
@@ -256,8 +284,8 @@ def _fmt_usd(x) -> str:
 def render_text(res: dict) -> str:
     """ข้อความล้วน — ใช้ในอีเมล fallback และปุ่มดาวน์โหลด"""
     mark = {"ARMED": "[ARMED]", "WATCH": "[WATCH]", "STAND_DOWN": "[STAND DOWN]"}
-    L = [f"{mark.get(res['verdict'], '')} {res.get('symbol')} — {res['headline']}",
-         res["reason"], "-" * 70]
+    tag = "[DATA ISSUE]" if res.get("data_issue") else mark.get(res["verdict"], "")
+    L = [f"{tag} {res.get('symbol')} — {res['headline']}", res["reason"], "-" * 70]
     for g in res["hard"]:
         L.append(f"  {'PASS' if g['ok'] else 'FAIL'}  {g['label']:<22} {g['value']}")
     if res["soft"]:

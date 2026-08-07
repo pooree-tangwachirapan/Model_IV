@@ -70,7 +70,7 @@ def render_cockpit_tab(sym: str, name: str):
         return
 
     g = gate.evaluate(snap)
-    color = LAMP[g["verdict"]]
+    color = "#f1c40f" if g.get("data_issue") else LAMP[g["verdict"]]
 
     st.markdown(CSS, unsafe_allow_html=True)
     st.markdown(
@@ -81,6 +81,10 @@ def render_cockpit_tab(sym: str, name: str):
     st.caption(f"**{snap['symbol']}** spot `${snap['spot']:,.2f}` · "
                f"expiry {snap['near_expiry']} ({snap['near_dte']}d) · {snap['asof']:%Y-%m-%d %H:%M} · "
                "CBOE delayed ~15 นาที · OI อัปเดตข้ามคืน")
+
+    if g.get("data_issue"):
+        st.warning("⚠️ **นี่เป็นปัญหาข้อมูล ไม่ใช่สภาพตลาด** — verdict ที่เห็นตัดสินจากกระดานที่ไม่ครบ "
+                   "อย่าเพิ่งเชื่อว่าตลาดไม่เหมาะเทรด ให้ไปเช็คว่า CBOE ตอบอะไรมาก่อน")
 
     # ── ประตู ──
     st.markdown("**ประตูแข็ง — ตกข้อเดียวจบ**")

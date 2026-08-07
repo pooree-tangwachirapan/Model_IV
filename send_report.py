@@ -42,7 +42,9 @@ def build_gate_html(gates: list[dict]) -> str:
         return ""
     cards = []
     for g in gates:
-        col = GATE_COLOR.get(g["verdict"], DIM)
+        bad = g.get("data_issue")
+        col = "#f1c40f" if bad else GATE_COLOR.get(g["verdict"], DIM)
+        word = "DATA ISSUE" if bad else GATE_WORD[g["verdict"]]
         lines = []
         for row in g["hard"] + g["soft"]:
             c = "#2ecc71" if row["ok"] else col
@@ -78,7 +80,7 @@ def build_gate_html(gates: list[dict]) -> str:
             f'border-radius:8px;padding:14px 6px;margin-bottom:14px">'
             f'<div style="padding:0 10px 8px">'
             f'<span style="color:{col};border:1px solid {col};border-radius:4px;padding:2px 8px;'
-            f'font-size:11px;font-weight:700;letter-spacing:.5px">{GATE_WORD[g["verdict"]]}</span>'
+            f'font-size:11px;font-weight:700;letter-spacing:.5px">{word}</span>'
             f'<span style="color:{TXT};font-size:17px;font-weight:700;margin-left:10px">'
             f'{g["symbol"]}</span>'
             f'<div style="color:{TXT};font-size:14px;font-weight:600;margin-top:8px">'
@@ -403,7 +405,10 @@ def main() -> int:
                 prev_state = json.load(f)
         except (OSError, ValueError):
             prev_state = {}          # รอบแรก / ไฟล์เสีย = ถือว่าไม่เคยมีสถานะ
-    cur_state = {g["symbol"]: g["verdict"] for g in gates}
+    # ปัญหาข้อมูลถือเป็นสถานะแยก ไม่ใช่ STAND_DOWN — ไม่งั้น pipeline พังแล้วเงียบสนิท
+    # และเก็บลง state ด้วย เพื่อให้ --only-on-change เตือนครั้งเดียวตอนเริ่มพัง ไม่ใช่ทุก 15 นาที
+    cur_state = {g["symbol"]: ("DATA_ISSUE" if g.get("data_issue") else g["verdict"])
+                 for g in gates}
 
     def save_state():
         if not args.state_file or not cur_state:
@@ -414,10 +419,17 @@ def main() -> int:
         except OSError as e:
             print(f"เขียน state file ไม่ได้: {e}", file=sys.stderr)
 
-    if args.armed_only and not any(g["verdict"] == "ARMED" for g in gates):
+    armed = any(g["verdict"] == "ARMED" for g in gates)
+    data_bad = any(g.get("data_issue") for g in gates)
+    if args.armed_only and not armed and not data_bad:
         print("--armed-only: ไม่มีตัวไหนขึ้น ARMED — ไม่ส่งเมล")
         save_state()
         return 0
+    if data_bad and not armed:
+        # ผ่านด่าน --armed-only มาได้เพราะข้อมูลมีปัญหา ไม่ใช่เพราะเข้าเกณฑ์
+        # (--only-on-change ด้านล่างยังหยุดได้อีกชั้น ถ้าพังแบบเดิมมาตั้งแต่รอบก่อน)
+        print("ตรวจพบปัญหาข้อมูล ผ่านด่าน --armed-only: "
+              + ", ".join(f"{g['symbol']}: {g['reason'][:60]}" for g in gates if g.get("data_issue")))
 
     if args.only_on_change and cur_state:
         if all(prev_state.get(s) == v for s, v in cur_state.items()):
@@ -448,10 +460,14 @@ def main() -> int:
     # หัวเรื่องขึ้นต้นด้วยคำตัดสิน — บนล็อกสกรีนมือถือเห็นแค่ 40 ตัวแรกก็พอตัดสินใจได้ว่าต้องเปิดไหม
     lead = ""
     if gates:
-        rank = {"ARMED": 0, "WATCH": 1, "STAND_DOWN": 2}
-        top = min(gates, key=lambda g: rank.get(g["verdict"], 9))
-        icon = {"ARMED": "🎯", "WATCH": "👀", "STAND_DOWN": "⛔"}[top["verdict"]]
-        lead = f"{icon} {GATE_WORD[top['verdict']]} {top['symbol']} · "
+        bad = [g for g in gates if g.get("data_issue")]
+        if bad:
+            lead = f"⚠️ DATA {', '.join(g['symbol'] for g in bad)} · "
+        else:
+            rank = {"ARMED": 0, "WATCH": 1, "STAND_DOWN": 2}
+            top = min(gates, key=lambda g: rank.get(g["verdict"], 9))
+            icon = {"ARMED": "🎯", "WATCH": "👀", "STAND_DOWN": "⛔"}[top["verdict"]]
+            lead = f"{icon} {GATE_WORD[top['verdict']]} {top['symbol']} · "
     subject = (f"{tag}{lead}{head['symbol']} ${head['spot']:,.2f} · "
                f"Signal Recap {', '.join(syms)} · {datetime.now():%d %b %H:%M}")
 
