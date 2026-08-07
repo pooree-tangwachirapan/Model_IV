@@ -15,6 +15,7 @@ send_report.py — สร้าง Signal Recap แล้วส่งเข้�
 """
 
 import argparse
+import json
 import os
 import smtplib
 import sys
@@ -337,6 +338,11 @@ def main() -> int:
                     help="ไม่ต้องแนบบล็อก 'วันนี้เข้าได้ไหม' (gate.py)")
     ap.add_argument("--armed-only", action="store_true",
                     help="ส่งเมลเฉพาะตอนมีตัวไหนขึ้น ARMED — ใช้กับ cron ระหว่างวันที่ยิงถี่")
+    ap.add_argument("--only-on-change", action="store_true",
+                    help="ส่งเฉพาะตอน verdict ต่างจากรอบก่อน (ต้องมี --state-file) "
+                         "— กันเมลซ้ำตอน ARMED ค้างอยู่หลายรอบ")
+    ap.add_argument("--state-file", default=os.environ.get("GATE_STATE_FILE", ""),
+                    help="ไฟล์ JSON เก็บ verdict ล่าสุดต่อ symbol")
     ap.add_argument("--cot-markets",
                     default=os.environ.get("COT_MARKETS", "NASDAQ-100 (รวม),VIX Futures"),
                     help="ตลาด COT คั่นด้วย , (ดูรายชื่อใน cme_reports.COT_MARKETS)")
@@ -389,10 +395,40 @@ def main() -> int:
         for g in gates:
             print(f"  gate {g['symbol']}: {g['verdict']} — {g['headline']}")
 
+    # ── สถานะรอบก่อน — ต้องเขียนกลับทุกทางออก ไม่งั้นการตรวจ "เปลี่ยนสถานะ" เพี้ยน ──
+    prev_state = {}
+    if args.state_file:
+        try:
+            with open(args.state_file, encoding="utf-8") as f:
+                prev_state = json.load(f)
+        except (OSError, ValueError):
+            prev_state = {}          # รอบแรก / ไฟล์เสีย = ถือว่าไม่เคยมีสถานะ
+    cur_state = {g["symbol"]: g["verdict"] for g in gates}
+
+    def save_state():
+        if not args.state_file or not cur_state:
+            return
+        try:
+            with open(args.state_file, "w", encoding="utf-8") as f:
+                json.dump(cur_state, f, ensure_ascii=False)
+        except OSError as e:
+            print(f"เขียน state file ไม่ได้: {e}", file=sys.stderr)
+
     if args.armed_only and not any(g["verdict"] == "ARMED" for g in gates):
         print("--armed-only: ไม่มีตัวไหนขึ้น ARMED — ไม่ส่งเมล")
+        save_state()
         return 0
 
+    if args.only_on_change and cur_state:
+        if all(prev_state.get(s) == v for s, v in cur_state.items()):
+            print(f"--only-on-change: verdict เท่ารอบก่อน ({cur_state}) — ไม่ส่งเมล")
+            save_state()
+            return 0
+        moved = {s: f"{prev_state.get(s, '—')}→{v}" for s, v in cur_state.items()
+                 if prev_state.get(s) != v}
+        print(f"--only-on-change: เปลี่ยนสถานะ {moved} — ส่งเมล")
+
+    save_state()
     html = build_html(snaps, cme, gates)
     text = "\n\n".join(render_text(s) for s in snaps)
     if gates:
