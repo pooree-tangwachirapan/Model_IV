@@ -222,7 +222,8 @@ def find_levels(ps: pd.DataFrame, S: float, df_contracts: pd.DataFrame | None = 
     ส่ง df_contracts (ผลจาก parse_cboe_for_gex) มาด้วย → Flip คำนวณแบบ spot-ladder
     ไม่ส่งมา → fallback เป็น cumulative-sum ข้าม strike (อ่อนกว่า มักได้ N/A)
     """
-    out = {"net": 0.0, "flip": None, "call_wall": None, "put_wall": None, "flip_method": None}
+    out = {"net": 0.0, "flip": None, "call_wall": None, "put_wall": None, "flip_method": None,
+           "call_wall_oi": None, "put_wall_oi": None, "call_oi": None, "put_oi": None}
     if ps.empty:
         return out
     out["net"] = float(ps["net_gex"].sum())
@@ -230,6 +231,21 @@ def find_levels(ps: pd.DataFrame, S: float, df_contracts: pd.DataFrame | None = 
         out["call_wall"] = float(ps.loc[ps["call_gex"].idxmax(), "strike"])
     if (ps["put_gex"] < 0).any():
         out["put_wall"] = float(ps.loc[ps["put_gex"].idxmin(), "strike"])
+
+    # ── wall อีกนิยาม: OI ล้วน (ไม่ถ่วงด้วย gamma) ──
+    # ต่างกันเพราะ gamma สูงสุดที่ ATM → GEX-wall ถูกดึงเข้าหาราคาปัจจุบัน
+    # ส่วน OI-wall คือ "ภูเขาสัญญาคงค้าง" จริง ซึ่งมักอยู่ที่เลขกลม ๆ ไกลกว่า
+    # vendor แต่ละเจ้าใช้คนละนิยาม — แสดงทั้งคู่แล้วให้คนอ่านตัดสิน
+    if df_contracts is not None and not df_contracts.empty \
+            and "open_interest" in df_contracts.columns:
+        c = df_contracts[df_contracts["type"] == "call"].groupby("strike")["open_interest"].sum()
+        p = df_contracts[df_contracts["type"] == "put"].groupby("strike")["open_interest"].sum()
+        if len(c) and c.max() > 0:
+            out["call_wall_oi"] = float(c.idxmax())
+            out["call_oi"] = int(c.max())
+        if len(p) and p.max() > 0:
+            out["put_wall_oi"] = float(p.idxmax())
+            out["put_oi"] = int(p.max())
 
     # ── วิธีหลัก: spot ladder (reprice gamma) ──
     if df_contracts is not None and not df_contracts.empty:
@@ -555,8 +571,26 @@ def render_gex_tab(sym: str, name: str, cboe_fetch):
         c2.metric("Spot", f"{S:,.2f}")
         c3.metric("Gamma Flip", f"{lv['flip']:,.1f}" if lv["flip"] else "N/A",
                   help=f"วิธี: {lv.get('flip_method') or 'N/A'}")
-        c4.metric("Call Wall", f"{lv['call_wall']:,.0f}" if lv["call_wall"] else "N/A")
-        c5.metric("Put Wall", f"{lv['put_wall']:,.0f}" if lv["put_wall"] else "N/A")
+        c4.metric("Call Wall (GEX)", f"{lv['call_wall']:,.0f}" if lv["call_wall"] else "N/A",
+                  delta=(f"OI ล้วน: {lv['call_wall_oi']:,.0f}"
+                         if lv.get("call_wall_oi") and lv["call_wall_oi"] != lv["call_wall"]
+                         else None), delta_color="off",
+                  help="GEX = γ×OI (gamma สูงสุดที่ ATM จึงดึง wall เข้าหาราคา) · "
+                       "OI ล้วน = ภูเขาสัญญาคงค้างจริง")
+        c5.metric("Put Wall (GEX)", f"{lv['put_wall']:,.0f}" if lv["put_wall"] else "N/A",
+                  delta=(f"OI ล้วน: {lv['put_wall_oi']:,.0f}"
+                         if lv.get("put_wall_oi") and lv["put_wall_oi"] != lv["put_wall"]
+                         else None), delta_color="off",
+                  help="ถ้าสองนิยามชี้คนละที่ → level ยังไม่ยืนยัน ให้ดูทั้งคู่")
+
+        # 0DTE: gamma พุ่งชัน wall จะเกาะ spot ไปเรื่อย ๆ ใช้เป็น level ไม่ได้
+        if chosen != "รวมทุก expiry":
+            dte = int(exps.get(chosen.split()[0], 99))
+            if dte == 0 and lv["call_wall"] and lv["put_wall"] \
+                    and abs(lv["call_wall"] - S) / S < 0.006 and abs(lv["put_wall"] - S) / S < 0.006:
+                st.warning("⚠️ **0DTE: wall เกาะ spot อยู่** — วันหมดอายุ gamma พุ่งชันมากที่ ATM "
+                           "ทำให้ GEX-wall วิ่งตามราคาแทนที่จะเป็นแนวคงที่ "
+                           "ถ้าจะใช้เป็น level ให้ดู **OI ล้วน** หรือเลือก expiry ถัดไปแทน")
         st.info(regime_text(lv["net"]) + " · ⚠️ OI อัปเดตข้ามคืน — ระหว่างวันใช้ราคาเทียบ Flip เป็นตัวตัดสินจริง")
         st.caption("⚠️ **เครื่องหมาย/ขนาดของ Net GEX ขึ้นกับ convention** (สูตรนี้สมมติ dealer long call / short put "
                    "ตามมาตรฐาน SqueezeMetrics) — index chain ที่ put OI หนักจะอ่านเป็นลบเสมอ "

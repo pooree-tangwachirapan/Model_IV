@@ -378,12 +378,24 @@ def build_snapshot(sym: str = "QQQ", hv_ticker: str | None = None,
         dc = abs(lv["call_wall"] - S) / S * 100
         dp = abs(S - lv["put_wall"]) / S * 100
         same = lv["call_wall"] == lv["put_wall"]
-        rows.append(_row("Walls", f"{lv['call_wall']:,.0f}↑ / {lv['put_wall']:,.0f}↓",
+        rows.append(_row("Walls (GEX)", f"{lv['call_wall']:,.0f}↑ / {lv['put_wall']:,.0f}↓",
                          "MAGNET" if same else "WATCH",
-                         f"strike เดียวถือทั้ง call+put OI สูงสุด ({dc:.2f}% จาก spot) = แม่เหล็กแรง"
+                         f"strike เดียวถือทั้ง call+put GEX สูงสุด ({dc:.2f}% จาก spot) = แม่เหล็กแรง"
                          if same else
                          f"call wall +{dc:.2f}% · put wall −{dp:.2f}% · "
                          + ("แนวต้านใกล้กว่า" if dc < dp else "แนวรับใกล้กว่า")))
+
+    # wall อีกนิยาม — ถ่วงด้วย gamma vs ไม่ถ่วง ให้คนละคำตอบเสมอ ต้องเห็นทั้งคู่
+    if lv.get("call_wall_oi") and lv.get("put_wall_oi"):
+        agree = (lv["call_wall_oi"] == lv["call_wall"] and lv["put_wall_oi"] == lv["put_wall"])
+        rows.append(_row(
+            "Walls (OI ล้วน)",
+            f"{lv['call_wall_oi']:,.0f}↑ / {lv['put_wall_oi']:,.0f}↓",
+            "ตรงกับ GEX" if agree else "ต่างจาก GEX",
+            f"call OI {lv['call_oi']:,} · put OI {lv['put_oi']:,} — "
+            + ("ทั้งสองนิยามชี้จุดเดียวกัน = level แข็ง" if agree else
+               "GEX ถ่วงด้วย gamma ซึ่งสูงสุดที่ ATM จึงดึง wall เข้าหาราคา · "
+               "OI ล้วนคือภูเขาสัญญาคงค้างจริง มักไกลกว่าและนิ่งกว่า")))
 
     if macro.get("vix"):
         v = macro["vix"]
