@@ -128,14 +128,28 @@ def render_cockpit_tab(sym: str, name: str):
         st.divider()
         st.markdown(f"**แผนไม้ — {p['direction']}**")
         a, b, c, d = st.columns(4)
-        a.metric("อ้างอิงราคาเข้า", f"{p['entry_ref']:,.2f}")
+        a.metric("จุดเข้าที่ควรเป็น", f"{p['ideal_entry']:,.2f}",
+                 delta=f"ราคาตอนนี้ {p['spot']:,.2f}", delta_color="off",
+                 help="อ้างอิงที่กำแพง ไม่ใช่ราคาปัจจุบัน — ตัวเลขจะได้ไม่เปลี่ยนทุกนาที")
         b.metric("Invalidate", f"{p['invalidation']:,.2f}",
                  help=f"ทะลุกำแพงไปอีก {gate.INVALID_EM_FRAC:g}×EM — ผูกกับความผันผวนจริง ไม่ใช่ % ตายตัว")
         c.metric("เป้า", f"{p['target']:,.2f}", help=p["target_src"])
         d.metric("เรขาคณิต", f"{p['plan_r']:.2f}R" if p.get("plan_r") else "—",
                  help=f"ต่ำกว่า {gate.MIN_PLAN_R:.1f}R ถือว่าไม่คุ้มค่าเสี่ยง")
-        st.caption("ตัวเลขทั้งหมดเป็นราคา **underlying** ไม่ใช่ราคา option — "
-                   "ใช้กำหนดว่าจะออกเมื่อไหร่ ส่วนไซส์คำนวณจากพรีเมียมด้านล่าง")
+
+        if p["blown"]:
+            st.error(f"ราคาเลยจุด invalidate ไปแล้ว ({p['spot']:,.2f}) — แผนนี้ตายแล้ว")
+        elif p["at_edge"]:
+            st.success(f"ราคาอยู่ที่ขอบพอดี ({p['spot']:,.2f})")
+        elif p["dist_to_entry_pts"] < 0:
+            st.warning(f"ราคาทะลุจุดเข้าไปแล้ว {abs(p['dist_to_entry_pts']):,.2f} "
+                       f"({abs(p['dist_to_entry_pct']):.2f}%) — ตกรถ ไม่ต้องไล่")
+        else:
+            st.info(f"ราคายังห่างจุดเข้าอีก {p['dist_to_entry_pts']:,.2f} "
+                    f"({p['dist_to_entry_pct']:.2f}%) — รอ")
+
+        st.caption("ตัวเลขทั้งหมดเป็นราคา **underlying** ไม่ใช่ราคา option · "
+                   "แสดงทุก verdict แม้ราคาจะเลยจุดเข้าไปแล้ว เพื่อให้ย้อนวัดผลได้")
 
     # ── ประตูที่เครื่องตัดสินแทนไม่ได้ ──
     st.divider()

@@ -104,36 +104,58 @@ def zone_problem(spot, put_wall, call_wall) -> tuple[str, bool]:
 def build_plan(spot, z, put_wall, call_wall, em, max_pain=None) -> dict | None:
     """
     แผนไม้ในหน่วยราคาของ underlying — ยังไม่ใช่ราคา option
-    invalidate ผูกกับ EM ไม่ใช่ % ตายตัว เพราะวันผันผวนสูงกำแพงถูกแหย่ลึกกว่าปกติเป็นเรื่องปกติ
+
+    คำนวณ "เสมอ" ตราบใดที่ยังมีโซนกับ EM แม้ราคาจะยังไม่ถึงขอบ หรือเลยขอบไปแล้ว
+    เพราะจุดเข้า/ออกที่ควรเป็นคือค่าคงที่ของวันนั้น ไม่ได้ขึ้นกับว่าตอนนี้ราคาอยู่ตรงไหน
+    ต้องมีตัวเลขนี้ตลอดถึงจะย้อนวัดได้ว่าถ้าเข้าตามแผนจริงจะชนะกี่ครั้ง
+
+    จุดเข้าอ้างอิงคือ "กำแพง" ไม่ใช่ราคาปัจจุบัน — invalidate ผูกกับ EM ไม่ใช่ % ตายตัว
+    เพราะวันผันผวนสูง กำแพงถูกแหย่ลึกกว่าปกติเป็นเรื่องธรรมดา
     """
-    if not z or not z["edge_near"] or not em:
+    if not z or not em:
         return None
     buf = INVALID_EM_FRAC * em
     if z["side"] == "put":
-        direction, wall = "LONG — fade ขึ้นจาก Put Wall", put_wall
+        side, direction, wall = "LONG", "LONG — fade ขึ้นจาก Put Wall", put_wall
         invalid = wall - buf
-        target = max_pain if (max_pain and max_pain > spot) else spot + TARGET_EM_FRAC * em
+        tgt_ok = max_pain and max_pain > wall
+        target = max_pain if tgt_ok else wall + TARGET_EM_FRAC * em
+        # fade ขึ้นจาก Put Wall = อยากให้ราคาลงมาหา wall
+        # ราคาสูงกว่า wall = ยังไม่ถึงจุดเข้า · ต่ำกว่า = ทะลุลงไปแล้ว
+        dist = spot - wall
+        blown = spot <= invalid
     else:
-        direction, wall = "SHORT — fade ลงจาก Call Wall", call_wall
+        side, direction, wall = "SHORT", "SHORT — fade ลงจาก Call Wall", call_wall
         invalid = wall + buf
-        target = max_pain if (max_pain and max_pain < spot) else spot - TARGET_EM_FRAC * em
+        tgt_ok = max_pain and max_pain < wall
+        target = max_pain if tgt_ok else wall - TARGET_EM_FRAC * em
+        # fade ลงจาก Call Wall = อยากให้ราคาขึ้นไปหา wall
+        # ราคาต่ำกว่า wall = ยังไม่ถึงจุดเข้า · สูงกว่า = ทะลุขึ้นไปแล้ว
+        dist = wall - spot
+        blown = spot >= invalid
 
     # เป้าต้องอยู่ในโซน — Max Pain ที่หลุดออกไปนอกกำแพงฝั่งตรงข้ามทำให้ R:R ปลอมสูง
     # แล้วผ่านประตู MIN_PLAN_R ทั้งที่แผนคือ "ถือข้ามกำแพงที่ควรจะหยุดราคา"
-    src = "Max Pain" if (max_pain and target == max_pain) else f"{TARGET_EM_FRAC:g}×EM เข้าหากลางโซน"
+    src = "Max Pain" if tgt_ok else f"{TARGET_EM_FRAC:g}×EM จากกำแพง"
     clamped = min(max(target, put_wall), call_wall)
     if clamped != target:
         src += f" (ตัดที่กำแพง {clamped:,.2f} — เป้าเดิม {target:,.2f} อยู่นอกโซน)"
         target = clamped
 
-    risk_pts = abs(spot - invalid)
-    reward_pts = abs(target - spot)
-    plan_r = (reward_pts / risk_pts) if risk_pts else None
+    # R คิดจากจุดเข้าที่ควรเป็น (กำแพง) ไม่ใช่ราคาปัจจุบัน — ไม่งั้นตัวเลขเปลี่ยนทุกนาที
+    risk_pts = abs(wall - invalid)
+    reward_pts = abs(target - wall)
     return {
-        "direction": direction, "wall": wall, "entry_ref": spot,
-        "invalidation": invalid, "target": target,
-        "risk_pts": risk_pts, "reward_pts": reward_pts, "plan_r": plan_r,
-        "target_src": src,
+        "side": side, "direction": direction, "wall": wall,
+        "ideal_entry": wall, "spot": spot,
+        # บวก = ยังไม่ถึงจุดเข้า (รอได้) · ลบ = ทะลุจุดเข้าไปแล้ว (ตกรถ)
+        "dist_to_entry_pts": dist,
+        "dist_to_entry_pct": (dist / wall * 100) if wall else None,
+        "invalidation": invalid, "target": target, "target_src": src,
+        "risk_pts": risk_pts, "reward_pts": reward_pts,
+        "plan_r": (reward_pts / risk_pts) if risk_pts else None,
+        "at_edge": bool(z["edge_near"]),
+        "blown": bool(blown),
     }
 
 
@@ -175,6 +197,10 @@ def evaluate(snap: dict) -> dict:
         out["headline"] = "ข้อมูลไม่พอจะตัดสิน" if is_data else "ไม่มีโซนให้ fade"
         out["reason"] = why
         return out
+
+    # แผนไม้คำนวณตรงนี้ ก่อนประตูจะตัดสิน — ให้มีตัวเลขจุดเข้า/ออกติดมาทุก verdict
+    # แม้แต่ตอน STAND_DOWN เพื่อให้ย้อนวัดผลได้ว่าถ้าเข้าตามแผนจะเป็นยังไง
+    out["plan"] = build_plan(S, z, pw, cw, em, snap.get("max_pain"))
 
     H.append(_g("ราคาอยู่ในโซน", z["inside"], f"{z['pct']*100:.0f}% ของโซน",
                 "อยู่นอกกำแพง = แรง hedge ไม่ดูดกลับแล้ว · กำแพงที่แตกเปลี่ยนหน้าที่จาก support เป็นตัวเร่ง"))
@@ -231,7 +257,6 @@ def evaluate(snap: dict) -> dict:
         out["reason"] = " · ".join(g["label"] for g in failed)
         return out
 
-    out["plan"] = build_plan(S, z, pw, cw, em, snap.get("max_pain"))
     weak = [g for g in Sf if not g["ok"]]
 
     if not z["edge_near"]:
@@ -315,11 +340,22 @@ def render_text(res: dict) -> str:
             L.append(f"  {'ok  ' if g['ok'] else 'WARN'}  {g['label']:<22} {g['value']}")
     p = res.get("plan")
     if p:
+        if p["blown"]:
+            state = f"ราคาเลยจุด invalidate ไปแล้ว ({p['spot']:,.2f}) — แผนนี้ตายแล้ว"
+        elif p["at_edge"]:
+            state = f"ราคาอยู่ที่ขอบพอดี ({p['spot']:,.2f}) — เข้าได้ตอนนี้"
+        elif p["dist_to_entry_pts"] < 0:
+            state = (f"ราคาทะลุจุดเข้าไปแล้ว {abs(p['dist_to_entry_pts']):,.2f} "
+                     f"({abs(p['dist_to_entry_pct']):.2f}%) — ตกรถ ไม่ต้องไล่")
+        else:
+            state = (f"ราคายังห่างจุดเข้าอีก {p['dist_to_entry_pts']:,.2f} "
+                     f"({p['dist_to_entry_pct']:.2f}%) — รอ")
         L += ["-" * 70,
               f"  {p['direction']}",
-              f"  อ้างอิงราคาเข้า {p['entry_ref']:,.2f} · invalidate {p['invalidation']:,.2f} "
+              f"  จุดเข้าที่ควรเป็น {p['ideal_entry']:,.2f} · invalidate {p['invalidation']:,.2f} "
               f"· เป้า {p['target']:,.2f} ({p['target_src']})",
-              f"  เรขาคณิต {p['plan_r']:.2f}R" if p.get("plan_r") else None]
+              f"  เรขาคณิต {p['plan_r']:.2f}R" if p.get("plan_r") else None,
+              f"  สถานะ: {state}"]
     L += ["-" * 70, "ยังต้องยืนยันด้วยตัวเองก่อนกด:"]
     L += [f"  [ ] {m}" for m in res["manual"]]
     L += ["", "ARMED = โครงสร้างเข้าเกณฑ์ ไม่ใช่คำสั่งให้เข้า · ข้อมูล CBOE delayed ~15 นาที, OI อัปเดตข้ามคืน",

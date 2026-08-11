@@ -1,0 +1,79 @@
+name: Forward Test (resolve + monthly report)
+
+# หลังตลาดปิด: ปิดไม้จำลองที่ถึงเป้า / invalidate / หมดเวลา แล้ว commit ledger กลับเข้ารีโป
+# วันที่ 1 ของเดือน: สรุปผลเดือนที่แล้วส่งเข้าเมล (ปลายทางเดียวกับรายงานรายวัน = MAIL_TO)
+#
+# ส่วน "เปิดไม้" ไม่ได้อยู่ที่นี่ — อยู่ในลูปของ armed-alert.yml เพราะไม้จะเปิดได้
+# ต้องเป็นจังหวะที่ราคาชิดกำแพงจริงระหว่างวัน ไม่ใช่ราคาปิด
+
+on:
+  schedule:
+    - cron: "10 21 * * 1-5"    # 17:10 ET — หลังตลาดปิด ปิดไม้ประจำวัน
+    - cron: "30 21 1 * *"      # วันที่ 1 ของเดือน — รายงานเดือนที่แล้ว
+  workflow_dispatch:
+    inputs:
+      month:
+        description: "เดือนที่จะสรุป YYYY-MM (เว้นว่าง = ไม่ส่งรายงาน แค่ปิดไม้)"
+        required: false
+        default: ""
+
+concurrency:
+  group: forward-test
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install streamlit numpy pandas scipy plotly requests yfinance
+
+      - name: Resolve open trades
+        run: python run_forward_test.py resolve
+
+      - name: Commit ledger
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add forward_test/ledger.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "ledger ไม่เปลี่ยน — ไม่ต้อง commit"
+          else
+            git commit -m "forward test: ปิดไม้จำลอง [skip ci]"
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+      # ส่งรายงานเมื่อ: กดเองพร้อมระบุเดือน หรือ เป็นวันที่ 1 ของเดือน
+      - name: Monthly report
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          MAIL_TO:   ${{ secrets.MAIL_TO }}
+          PICKED:    ${{ inputs.month }}
+        run: |
+          MONTH="$PICKED"
+          if [ -z "$MONTH" ] && [ "$(date -u +%d)" = "01" ]; then
+            MONTH=$(date -u -d "yesterday" +%Y-%m)     # เดือนที่เพิ่งจบ
+          fi
+          if [ -z "$MONTH" ]; then
+            echo "ยังไม่ถึงรอบรายงาน (ไม่ใช่วันที่ 1 และไม่ได้ระบุเดือน) — ข้าม"
+            exit 0
+          fi
+          echo "ส่งรายงานเดือน $MONTH"
+          python run_forward_test.py report --month "$MONTH" --email

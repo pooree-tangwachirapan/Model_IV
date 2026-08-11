@@ -66,11 +66,17 @@ def build_gate_html(gates: list[dict]) -> str:
                 f'<div style="color:{TXT};font-size:13px;font-weight:600">{p["direction"]}</div>'
                 f'<div style="color:{DIM};font-size:11.5px;line-height:1.6;margin-top:4px;'
                 f'font-family:monospace">'
-                f'entry ~{p["entry_ref"]:,.2f} · invalidate {p["invalidation"]:,.2f} · '
+                f'entry {p["ideal_entry"]:,.2f} · invalidate {p["invalidation"]:,.2f} · '
                 f'target {p["target"]:,.2f}'
                 + (f' · {p["plan_r"]:.2f}R' if p.get("plan_r") else "")
                 + f'</div><div style="color:{DIM};font-size:11px;margin-top:3px">'
-                  f'ราคา underlying · {p["target_src"]}</div></div>')
+                  f'ราคาตอนนี้ {p["spot"]:,.2f} · '
+                  + ("เลย invalidate ไปแล้ว — แผนนี้ตาย" if p["blown"]
+                     else "อยู่ที่ขอบพอดี" if p["at_edge"]
+                     else f'ทะลุจุดเข้าไปแล้ว {abs(p["dist_to_entry_pct"]):.2f}% — ตกรถ'
+                     if p["dist_to_entry_pts"] < 0
+                     else f'ยังห่างจุดเข้า {p["dist_to_entry_pct"]:.2f}%')
+                  + f' · {p["target_src"]}</div></div>')
 
         todo = "".join(f'<div style="color:{DIM};font-size:11.5px;line-height:1.7">☐ {m}</div>'
                        for m in g["manual"])

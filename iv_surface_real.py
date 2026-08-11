@@ -37,6 +37,7 @@ fa_gex      = _load_local("fa_gex")
 dashboard   = _load_local("dashboard")
 cme_tab     = _load_local("cme_tab")
 cockpit_tab = _load_local("cockpit_tab")
+pnl_tab     = _load_local("pnl_tab")
 
 # ── Page config ──────────────────────────────
 st.set_page_config(
@@ -594,14 +595,18 @@ if "S" not in st.session_state:
     st.stop()
 
 # ── Tabs: Dashboard / Cockpit / IV Surface (เดิม) / GEX / CME / เทียบข้อมูล ──
-tab_dash, tab_ck, tab_iv, tab_gex, tab_cme, tab_cmp = st.tabs(
-    ["📋 Dashboard", "🎯 Cockpit", "📈 IV Surface", "🧲 GEX", "🏛️ CME / Macro", "⚖️ เทียบข้อมูล"])
+tab_dash, tab_ck, tab_pnl, tab_iv, tab_gex, tab_cme, tab_cmp = st.tabs(
+    ["📋 Dashboard", "🎯 Cockpit", "📊 P&L", "📈 IV Surface", "🧲 GEX",
+     "🏛️ CME / Macro", "⚖️ เทียบข้อมูล"])
 
 with tab_dash:
     dashboard.render_dashboard_tab(sym=sym, name=name)
 
 with tab_ck:
     cockpit_tab.render_cockpit_tab(sym=sym, name=name)
+
+with tab_pnl:
+    pnl_tab.render_pnl_tab()
 
 with tab_cme:
     cme_tab.render_cme_tab()
