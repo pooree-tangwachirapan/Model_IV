@@ -96,11 +96,31 @@ def render_cockpit_tab(sym: str, name: str):
 
     z = g["zone"]
     if z:
-        a, b, c = st.columns(3)
+        a, b, c, d = st.columns(4)
         a.metric("ถึง Put Wall", f"{z['d_put_pct']:.2f}%")
         b.metric("ตำแหน่งในโซน", f"{z['pct']*100:.0f}%",
                  help="0% = ชิด Put Wall · 100% = ชิด Call Wall · ขอบ 15% สองฝั่งคือที่ที่มี edge")
         c.metric("ถึง Call Wall", f"{z['d_call_pct']:.2f}%")
+        if z.get("zone_em"):
+            d.metric("ความกว้างโซน", f"{z['zone_em']:.2f}×EM",
+                     help=f"ต้อง ≥ {gate.MIN_ZONE_EM:g}×EM · แคบกว่านี้ราคาเดินข้ามทั้งโซนได้เองใน 1 วัน")
+
+        # กำแพงอีกนิยาม — GEX ถ่วงด้วย gamma (สูงสุดที่ ATM) จึงถูกดึงเข้าหาราคา
+        # ส่วน OI ล้วนคือภูเขาสัญญาคงค้างจริง สองอันตรงกัน = level แข็ง
+        lv = snap.get("levels") or {}
+        cw_oi, pw_oi = lv.get("call_wall_oi"), lv.get("put_wall_oi")
+        if cw_oi and pw_oi:
+            same = (cw_oi == lv.get("call_wall") and pw_oi == lv.get("put_wall"))
+            msg = (f"กำแพงที่ใช้ตัดสินคือนิยาม **GEX** (γ×OI) = "
+                   f"`{lv['put_wall']:,.0f} / {lv['call_wall']:,.0f}` · "
+                   f"ถ้าใช้ **OI ล้วน** จะได้ `{pw_oi:,.0f} / {cw_oi:,.0f}`")
+            if same:
+                st.success(msg + " — **ตรงกันทั้งสองนิยาม = level แข็ง**")
+            else:
+                st.info(msg + "\n\nต่างกันเพราะ GEX ถ่วงด้วย gamma ซึ่งสูงสุดที่ ATM "
+                        "จึงดึงกำแพงเข้าหาราคาปัจจุบัน ส่วน OI ล้วนคือภูเขาสัญญาคงค้างจริง "
+                        "ที่นิ่งกว่า — **สองนิยามไม่ตรงกัน = level ยังไม่ได้รับการยืนยัน** "
+                        "ให้ลดความเชื่อมั่นลง")
 
     # ── แผนไม้ ──
     p = g.get("plan")

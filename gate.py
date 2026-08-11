@@ -28,6 +28,13 @@ ZERO_DTE_HIGH = 35.0      # % ของ |GEX| ที่ถือว่า 0DTE �
 PIN_LOW = 35.0            # pin score ต่ำกว่านี้ = โน้มไป trend ไม่ใช่ pin
 MIN_PLAN_R = 2.0          # เรขาคณิตต้องให้อย่างน้อย 2R ถึงจะคุ้มค่าเสี่ยง
 
+# โซนต้องกว้างพอเทียบ "ระยะที่ราคาเดินได้เองใน 1 วัน" ไม่งั้นเรขาคณิตไร้ความหมาย
+# ที่มา: เข้าที่ขอบ 15% → ระยะถึงกลางโซน = 0.35 × ความกว้าง
+#        อยากให้ระยะนั้น ≥ 1σ ต้องได้ความกว้าง ≥ 2.9×EM → ปัดขึ้นเป็น 3.0 เผื่อ margin
+# เคสจริงที่จับได้ (2026-08-11): SPY 0DTE กำแพง 770/775 กว้าง 5.00 จุด EM 3.52
+#        = 1.42×EM · ราคาเดินข้ามทั้งโซนได้เองโดยไม่มีอะไรเกิดขึ้น
+MIN_ZONE_EM = 3.0
+
 DAY_MAX_TRADES = 2
 DAY_MAX_LOSS_PCT = 3.0
 RISK_PCT_DEFAULT = 1.5
@@ -111,6 +118,14 @@ def build_plan(spot, z, put_wall, call_wall, em, max_pain=None) -> dict | None:
         invalid = wall + buf
         target = max_pain if (max_pain and max_pain < spot) else spot - TARGET_EM_FRAC * em
 
+    # เป้าต้องอยู่ในโซน — Max Pain ที่หลุดออกไปนอกกำแพงฝั่งตรงข้ามทำให้ R:R ปลอมสูง
+    # แล้วผ่านประตู MIN_PLAN_R ทั้งที่แผนคือ "ถือข้ามกำแพงที่ควรจะหยุดราคา"
+    src = "Max Pain" if (max_pain and target == max_pain) else f"{TARGET_EM_FRAC:g}×EM เข้าหากลางโซน"
+    clamped = min(max(target, put_wall), call_wall)
+    if clamped != target:
+        src += f" (ตัดที่กำแพง {clamped:,.2f} — เป้าเดิม {target:,.2f} อยู่นอกโซน)"
+        target = clamped
+
     risk_pts = abs(spot - invalid)
     reward_pts = abs(target - spot)
     plan_r = (reward_pts / risk_pts) if risk_pts else None
@@ -118,7 +133,7 @@ def build_plan(spot, z, put_wall, call_wall, em, max_pain=None) -> dict | None:
         "direction": direction, "wall": wall, "entry_ref": spot,
         "invalidation": invalid, "target": target,
         "risk_pts": risk_pts, "reward_pts": reward_pts, "plan_r": plan_r,
-        "target_src": "Max Pain" if (max_pain and target == max_pain) else f"{TARGET_EM_FRAC:g}×EM เข้าหากลางโซน",
+        "target_src": src,
     }
 
 
@@ -163,6 +178,15 @@ def evaluate(snap: dict) -> dict:
 
     H.append(_g("ราคาอยู่ในโซน", z["inside"], f"{z['pct']*100:.0f}% ของโซน",
                 "อยู่นอกกำแพง = แรง hedge ไม่ดูดกลับแล้ว · กำแพงที่แตกเปลี่ยนหน้าที่จาก support เป็นตัวเร่ง"))
+
+    # โซนแคบกว่าระยะที่ราคาเดินได้เอง = ไม่มีอะไรให้ fade ต่อให้รูปร่างถูกทุกอย่าง
+    if em:
+        zone_em = z["span"] / em
+        z["zone_em"] = zone_em
+        H.append(_g("โซนกว้างพอ", zone_em >= MIN_ZONE_EM,
+                    f"{z['span']:,.2f} จุด = {zone_em:.2f}×EM",
+                    f"ต้อง ≥ {MIN_ZONE_EM:g}×EM · แคบกว่านี้ราคาเดินข้ามทั้งโซนได้เองใน 1 วัน "
+                    f"เข้าที่ขอบก็ไม่ต่างจากเข้ากลาง"))
     H.append(_g("Net GEX เป็นบวก", net > 0, _fmt_usd(net),
                 "บวก = dealer long gamma ซื้อ dip ขาย rip · ลบ = ไล่ตามราคา ห้าม fade"))
 
