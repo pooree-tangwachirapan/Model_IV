@@ -33,9 +33,10 @@ def _load_local(mod_name):
         return importlib.import_module(mod_name)
 
 
-fa_gex    = _load_local("fa_gex")
-dashboard = _load_local("dashboard")
-cme_tab   = _load_local("cme_tab")
+fa_gex      = _load_local("fa_gex")
+dashboard   = _load_local("dashboard")
+cme_tab     = _load_local("cme_tab")
+cockpit_tab = _load_local("cockpit_tab")
 
 # ── Page config ──────────────────────────────
 st.set_page_config(
@@ -592,12 +593,15 @@ if "S" not in st.session_state:
     st.info("👈 กด **โหลดข้อมูล** ใน Sidebar เพื่อเริ่ม")
     st.stop()
 
-# ── Tabs: Dashboard / IV Surface (เดิม) / GEX / CME / เทียบข้อมูล ──
-tab_dash, tab_iv, tab_gex, tab_cme, tab_cmp = st.tabs(
-    ["📋 Dashboard", "📈 IV Surface", "🧲 GEX", "🏛️ CME / Macro", "⚖️ เทียบข้อมูล"])
+# ── Tabs: Dashboard / Cockpit / IV Surface (เดิม) / GEX / CME / เทียบข้อมูล ──
+tab_dash, tab_ck, tab_iv, tab_gex, tab_cme, tab_cmp = st.tabs(
+    ["📋 Dashboard", "🎯 Cockpit", "📈 IV Surface", "🧲 GEX", "🏛️ CME / Macro", "⚖️ เทียบข้อมูล"])
 
 with tab_dash:
     dashboard.render_dashboard_tab(sym=sym, name=name)
+
+with tab_ck:
+    cockpit_tab.render_cockpit_tab(sym=sym, name=name)
 
 with tab_cme:
     cme_tab.render_cme_tab()

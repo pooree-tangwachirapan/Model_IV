@@ -15,6 +15,7 @@ send_report.py — สร้าง Signal Recap แล้วส่งเข้�
 """
 
 import argparse
+import json
 import os
 import smtplib
 import sys
@@ -22,10 +23,86 @@ import traceback
 from datetime import datetime
 from email.message import EmailMessage
 
+import gate
 import snapshot
 from dashboard import STATUS_COLOR, render_text
 
 BG, CARD, LINE, TXT, DIM = "#0b1220", "#111d33", "#1d2f4f", "#e8f2ff", "#7e93b5"
+
+GATE_COLOR = {"ARMED": "#2ecc71", "WATCH": "#e67e22", "STAND_DOWN": "#e74c3c"}
+GATE_WORD = {"ARMED": "ARMED", "WATCH": "WATCH", "STAND_DOWN": "STAND DOWN"}
+
+
+def build_gate_html(gates: list[dict]) -> str:
+    """
+    บล็อก "วันนี้เข้าได้ไหม" — วางบนสุดของเมลเพราะเป็นส่วนเดียวที่ต้องตัดสินใจ
+    ARMED = โครงสร้างของกระดานไม่ได้ห้ามไว้ ไม่ใช่คำสั่งให้เข้า
+    """
+    if not gates:
+        return ""
+    cards = []
+    for g in gates:
+        bad = g.get("data_issue")
+        col = "#f1c40f" if bad else GATE_COLOR.get(g["verdict"], DIM)
+        word = "DATA ISSUE" if bad else GATE_WORD[g["verdict"]]
+        lines = []
+        for row in g["hard"] + g["soft"]:
+            c = "#2ecc71" if row["ok"] else col
+            mark = "✓" if row["ok"] else "✕"
+            lines.append(
+                f'<tr><td style="padding:5px 8px;color:{c};font-size:13px;'
+                f'width:22px;text-align:center">{mark}</td>'
+                f'<td style="padding:5px 8px;color:#8aadee;font-size:12px;'
+                f'font-weight:600;white-space:nowrap">{row["label"]}</td>'
+                f'<td style="padding:5px 8px;color:{TXT};font-family:monospace;'
+                f'font-size:12px">{row["value"]}</td></tr>')
+
+        plan = ""
+        p = g.get("plan")
+        if p:
+            plan = (
+                f'<div style="margin:10px 10px 0;padding:10px 12px;background:{BG};'
+                f'border-left:3px solid {col};border-radius:0 6px 6px 0">'
+                f'<div style="color:{TXT};font-size:13px;font-weight:600">{p["direction"]}</div>'
+                f'<div style="color:{DIM};font-size:11.5px;line-height:1.6;margin-top:4px;'
+                f'font-family:monospace">'
+                f'entry ~{p["entry_ref"]:,.2f} · invalidate {p["invalidation"]:,.2f} · '
+                f'target {p["target"]:,.2f}'
+                + (f' · {p["plan_r"]:.2f}R' if p.get("plan_r") else "")
+                + f'</div><div style="color:{DIM};font-size:11px;margin-top:3px">'
+                  f'ราคา underlying · {p["target_src"]}</div></div>')
+
+        todo = "".join(f'<div style="color:{DIM};font-size:11.5px;line-height:1.7">☐ {m}</div>'
+                       for m in g["manual"])
+
+        cards.append(
+            f'<div style="background:{CARD};border:1px solid {LINE};border-left:4px solid {col};'
+            f'border-radius:8px;padding:14px 6px;margin-bottom:14px">'
+            f'<div style="padding:0 10px 8px">'
+            f'<span style="color:{col};border:1px solid {col};border-radius:4px;padding:2px 8px;'
+            f'font-size:11px;font-weight:700;letter-spacing:.5px">{word}</span>'
+            f'<span style="color:{TXT};font-size:17px;font-weight:700;margin-left:10px">'
+            f'{g["symbol"]}</span>'
+            f'<div style="color:{TXT};font-size:14px;font-weight:600;margin-top:8px">'
+            f'{g["headline"]}</div>'
+            f'<div style="color:{DIM};font-size:11.5px;line-height:1.5;margin-top:3px">'
+            f'{g["reason"]}</div></div>'
+            f'<table style="width:100%;border-collapse:collapse">{"".join(lines)}</table>'
+            f'{plan}'
+            f'<div style="margin:12px 10px 0;padding-top:10px;border-top:1px solid {LINE}">'
+            f'<div style="color:#8aadee;font-size:11px;font-weight:600;margin-bottom:5px">'
+            f'ยังต้องยืนยันเองก่อนกด</div>{todo}</div>'
+            f'</div>')
+
+    return (
+        f'<div style="color:{TXT};font-size:22px;font-weight:700;margin-bottom:4px">'
+        f'🎯 วันนี้เข้าได้ไหม</div>'
+        f'<div style="color:{DIM};font-size:12px;margin-bottom:14px">'
+        f'ประตูอัตโนมัติจาก gate.py · <b>ARMED = โครงสร้างไม่ได้ห้ามไว้ ไม่ใช่คำสั่งให้เข้า</b></div>'
+        f'{"".join(cards)}'
+        f'<div style="color:{DIM};font-size:11px;line-height:1.6;margin:-4px 0 22px">'
+        f'⚠️ เมลนี้ส่งตามเวลา cron — ถ้ารันก่อนตลาดเปิด level ที่เห็นคือ OI ของเมื่อคืน '
+        f'ยังไม่ใช่สภาพตอนราคาวิ่งจริง ต้อง re-check ระหว่างวันก่อนเข้าไม้เสมอ</div>')
 
 
 def build_cme_html(cme: dict) -> str:
@@ -97,7 +174,8 @@ def build_cme_html(cme: dict) -> str:
             f'ดึงอัตโนมัติไม่ได้ — CME ห้าม scraping ใน Terms of Use</div></div>')
 
 
-def build_html(snaps: list[dict], cme: dict | None = None) -> str:
+def build_html(snaps: list[dict], cme: dict | None = None,
+               gates: list[dict] | None = None) -> str:
     """HTML แบบ table + inline style — mail client ส่วนใหญ่ไม่รองรับ CSS grid/flex"""
     blocks = []
     for s in snaps:
@@ -144,6 +222,7 @@ def build_html(snaps: list[dict], cme: dict | None = None) -> str:
         f'<html><body style="margin:0;padding:18px;background:{BG};'
         f'font-family:-apple-system,Segoe UI,Roboto,sans-serif">'
         f'<div style="max-width:820px;margin:0 auto">'
+        f'{build_gate_html(gates or [])}'
         f'<div style="color:{TXT};font-size:22px;font-weight:700;margin-bottom:4px">'
         f'📋 Signal Recap</div>'
         f'<div style="color:{DIM};font-size:12px;margin-bottom:18px">'
@@ -257,6 +336,15 @@ def main() -> int:
     ap.add_argument("--symbols", default=os.environ.get("SYMBOLS", "QQQ"))
     ap.add_argument("--no-cme", action="store_true",
                     help="ไม่ต้องแนบส่วน CME/COT")
+    ap.add_argument("--no-gate", action="store_true",
+                    help="ไม่ต้องแนบบล็อก 'วันนี้เข้าได้ไหม' (gate.py)")
+    ap.add_argument("--armed-only", action="store_true",
+                    help="ส่งเมลเฉพาะตอนมีตัวไหนขึ้น ARMED — ใช้กับ cron ระหว่างวันที่ยิงถี่")
+    ap.add_argument("--only-on-change", action="store_true",
+                    help="ส่งเฉพาะตอน verdict ต่างจากรอบก่อน (ต้องมี --state-file) "
+                         "— กันเมลซ้ำตอน ARMED ค้างอยู่หลายรอบ")
+    ap.add_argument("--state-file", default=os.environ.get("GATE_STATE_FILE", ""),
+                    help="ไฟล์ JSON เก็บ verdict ล่าสุดต่อ symbol")
     ap.add_argument("--cot-markets",
                     default=os.environ.get("COT_MARKETS", "NASDAQ-100 (รวม),VIX Futures"),
                     help="ตลาด COT คั่นด้วย , (ดูรายชื่อใน cme_reports.COT_MARKETS)")
@@ -298,8 +386,67 @@ def main() -> int:
         except Exception as e:
             print(f"  CME: ข้ามไป ({type(e).__name__}: {e})", file=sys.stderr)
 
-    html = build_html(snaps, cme)
+    # ── ประตูก่อนเข้าไม้ — ล้มเหลวได้ ไม่ทำให้ Signal Recap ไม่ถูกส่ง ──
+    gates = []
+    if not args.no_gate:
+        for s in ok:
+            try:
+                gates.append(gate.evaluate(s))
+            except Exception as e:
+                print(f"  gate {s['symbol']}: ข้ามไป ({type(e).__name__}: {e})", file=sys.stderr)
+        for g in gates:
+            print(f"  gate {g['symbol']}: {g['verdict']} — {g['headline']}")
+
+    # ── สถานะรอบก่อน — ต้องเขียนกลับทุกทางออก ไม่งั้นการตรวจ "เปลี่ยนสถานะ" เพี้ยน ──
+    prev_state = {}
+    if args.state_file:
+        try:
+            with open(args.state_file, encoding="utf-8") as f:
+                prev_state = json.load(f)
+        except (OSError, ValueError):
+            prev_state = {}          # รอบแรก / ไฟล์เสีย = ถือว่าไม่เคยมีสถานะ
+    # ปัญหาข้อมูลถือเป็นสถานะแยก ไม่ใช่ STAND_DOWN — ไม่งั้น pipeline พังแล้วเงียบสนิท
+    # และเก็บลง state ด้วย เพื่อให้ --only-on-change เตือนครั้งเดียวตอนเริ่มพัง ไม่ใช่ทุก 15 นาที
+    cur_state = {g["symbol"]: ("DATA_ISSUE" if g.get("data_issue") else g["verdict"])
+                 for g in gates}
+
+    def save_state():
+        if not args.state_file or not cur_state:
+            return
+        try:
+            with open(args.state_file, "w", encoding="utf-8") as f:
+                json.dump(cur_state, f, ensure_ascii=False)
+        except OSError as e:
+            print(f"เขียน state file ไม่ได้: {e}", file=sys.stderr)
+
+    armed = any(g["verdict"] == "ARMED" for g in gates)
+    data_bad = any(g.get("data_issue") for g in gates)
+    if args.armed_only and not armed and not data_bad:
+        print("--armed-only: ไม่มีตัวไหนขึ้น ARMED — ไม่ส่งเมล")
+        save_state()
+        return 0
+    if data_bad and not armed:
+        # ผ่านด่าน --armed-only มาได้เพราะข้อมูลมีปัญหา ไม่ใช่เพราะเข้าเกณฑ์
+        # (--only-on-change ด้านล่างยังหยุดได้อีกชั้น ถ้าพังแบบเดิมมาตั้งแต่รอบก่อน)
+        print("ตรวจพบปัญหาข้อมูล ผ่านด่าน --armed-only: "
+              + ", ".join(f"{g['symbol']}: {g['reason'][:60]}" for g in gates if g.get("data_issue")))
+
+    if args.only_on_change and cur_state:
+        if all(prev_state.get(s) == v for s, v in cur_state.items()):
+            print(f"--only-on-change: verdict เท่ารอบก่อน ({cur_state}) — ไม่ส่งเมล")
+            save_state()
+            return 0
+        moved = {s: f"{prev_state.get(s, '—')}→{v}" for s, v in cur_state.items()
+                 if prev_state.get(s) != v}
+        print(f"--only-on-change: เปลี่ยนสถานะ {moved} — ส่งเมล")
+
+    save_state()
+    html = build_html(snaps, cme, gates)
     text = "\n\n".join(render_text(s) for s in snaps)
+    if gates:
+        text = ("=" * 78 + "\nวันนี้เข้าได้ไหม\n" + "=" * 78 + "\n"
+                + "\n\n".join(gate.render_text(g) for g in gates)
+                + "\n\n" + "=" * 78 + "\n\n" + text)
     if cme:
         try:
             import cme_reports
@@ -310,8 +457,19 @@ def main() -> int:
             pass
     tag = "⚠️ " if failed else ""
     head = ok[0]
-    subject = (f"{tag}Signal Recap {', '.join(syms)} — "
-               f"{head['symbol']} ${head['spot']:,.2f} · {datetime.now():%d %b %H:%M}")
+    # หัวเรื่องขึ้นต้นด้วยคำตัดสิน — บนล็อกสกรีนมือถือเห็นแค่ 40 ตัวแรกก็พอตัดสินใจได้ว่าต้องเปิดไหม
+    lead = ""
+    if gates:
+        bad = [g for g in gates if g.get("data_issue")]
+        if bad:
+            lead = f"⚠️ DATA {', '.join(g['symbol'] for g in bad)} · "
+        else:
+            rank = {"ARMED": 0, "WATCH": 1, "STAND_DOWN": 2}
+            top = min(gates, key=lambda g: rank.get(g["verdict"], 9))
+            icon = {"ARMED": "🎯", "WATCH": "👀", "STAND_DOWN": "⛔"}[top["verdict"]]
+            lead = f"{icon} {GATE_WORD[top['verdict']]} {top['symbol']} · "
+    subject = (f"{tag}{lead}{head['symbol']} ${head['spot']:,.2f} · "
+               f"Signal Recap {', '.join(syms)} · {datetime.now():%d %b %H:%M}")
 
     if args.dry_run:
         with open("preview.html", "w", encoding="utf-8") as f:

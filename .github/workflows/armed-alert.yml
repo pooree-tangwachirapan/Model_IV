@@ -1,0 +1,90 @@
+name: Armed Alert (intraday)
+
+# ส่งเมลเฉพาะ "ตอนที่เพิ่งเข้าเกณฑ์" ระหว่างวัน — เงียบสนิทถ้าไม่มีอะไร
+#
+# จังหวะ: ทุก 15 นาที = เท่ากับความถี่ที่ข้อมูล CBOE จะใหม่ขึ้นจริง (delayed ~15 นาที)
+#         ยิงถี่กว่านี้ไม่ได้ข้อมูลใหม่ ได้แค่เผา quota
+#
+# ทำไมนาที 7/22/37/52 ไม่ใช่ 0/15/30/45:
+#   GitHub บอกเองว่า cron ที่ตั้งตรงต้นชั่วโมง/เลขกลม ๆ คือช่วงที่คิวแน่นที่สุด
+#   หลักฐานในรีโปนี้: daily-report ตั้ง "0 13" (ตรงเป๊ะ) แต่จริงรัน 14:07 UTC = ช้า 67 นาที
+#   ระยะห่างยังเป็น 15 นาทีเท่าเดิมทุกประการ แค่เลื่อนหลบคิว
+#
+# ข้อจำกัดที่ยังแก้ไม่ได้:
+#   1) ต่อให้หลบคิวแล้ว GitHub ก็ยังดีเลย์และ "ข้ามรอบ" ได้ ไม่มีการรับประกันเวลา
+#      → ยิงถี่เพื่อให้อย่างน้อยบางรอบตกในหน้าต่าง ไม่ใช่เพื่อความแม่นยำของรอบใดรอบหนึ่ง
+#   2) CBOE ดีเลย์ ~15 นาที · OI อัปเดตข้ามคืน → level ตามหลังราคาจริงเสมอ
+#   3) cron เป็น UTC ไม่รู้จัก DST — ตารางนี้ตั้งไว้สำหรับ EDT (มี.ค.–พ.ย.)
+#      ช่วง EST (พ.ย.–มี.ค.) ต้องบวก 1 ชม. ที่ทุกบรรทัด ไม่งั้นจะยิงเร็วไป 1 ชม.
+#
+# หน้าต่างที่ครอบ: 10:22–14:22 ET — เริ่มหลัง gamma whipsaw ชั่วโมงแรกจบ
+# และหยุดก่อนชั่วโมงสุดท้ายที่ควรปิดไม้มากกว่าเปิด
+
+on:
+  schedule:
+    - cron: "22,37,52 14 * * 1-5"      # 10:22 · 10:37 · 10:52 ET
+    - cron: "7,22,37,52 15-17 * * 1-5" # 11:07 – 13:52 ET
+    - cron: "7,22 18 * * 1-5"          # 14:07 · 14:22 ET
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Symbols คั่นด้วย , (เช่น QQQ,SPY)"
+        required: false
+        default: "QQQ"
+      always_send:
+        description: "ส่งแม้ไม่ ARMED และแม้สถานะไม่เปลี่ยน (ไว้ทดสอบ)"
+        type: boolean
+        default: false
+
+# รอบก่อนยังไม่จบ อย่าเพิ่งเริ่มรอบใหม่ — และรอบใหม่สำคัญกว่ารอบเก่าที่ค้างคิว
+concurrency:
+  group: armed-alert
+  cancel-in-progress: true
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install streamlit numpy pandas scipy plotly requests yfinance
+
+      # verdict ของรอบก่อน — ใช้ตัดสินว่า "เพิ่งเปลี่ยนเป็น ARMED" หรือ "ARMED ค้างมาแล้ว"
+      # cache พลาดได้ (หมดอายุ 7 วัน / โดน evict) → ถือว่าไม่เคยมีสถานะ แล้วส่งเมล
+      # พลาดทางที่ได้เมลเกิน ดีกว่าพลาดทางที่เงียบตอนควรเตือน
+      - name: Restore gate state
+        uses: actions/cache/restore@v4
+        with:
+          path: .gate-state.json
+          key: gate-state-${{ github.run_id }}
+          restore-keys: gate-state-
+
+      - name: Evaluate gate and alert on transition into ARMED
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          MAIL_TO:   ${{ secrets.MAIL_TO }}
+          SYMBOLS:   ${{ inputs.symbols || 'QQQ' }}
+          GATE_STATE_FILE: .gate-state.json
+        # --no-cme: COT อัปเดตสัปดาห์ละครั้ง ไม่มีประโยชน์กับเมลระหว่างวัน และทำให้ job ช้าลง
+        run: |
+          python send_report.py --no-cme \
+            ${{ inputs.always_send == true && ' ' || '--armed-only --only-on-change' }}
+
+      - name: Save gate state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .gate-state.json
+          key: gate-state-${{ github.run_id }}
