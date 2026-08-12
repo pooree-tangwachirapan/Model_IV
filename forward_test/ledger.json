@@ -1,1 +1,22 @@
-[]
+[
+ {
+  "id": "QQQ-20260812-160711",
+  "symbol": "QQQ",
+  "date": "2026-08-12",
+  "opened": "2026-08-12T16:07:11+00:00",
+  "side": "SHORT",
+  "entry": 725.0,
+  "invalidation": 726.16,
+  "target": 719.0,
+  "plan_r": 5.170878,
+  "risk_usd": 75.0,
+  "spot_at_signal": 723.41,
+  "status": "open",
+  "closed_date": null,
+  "closed_at": null,
+  "exit": null,
+  "realized_r": null,
+  "pnl_usd": null,
+  "note": ""
+ }
+]
