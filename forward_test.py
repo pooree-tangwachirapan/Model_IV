@@ -1,20 +1,31 @@
 """
-forward_test.py — เดินระบบ Cockpit แบบจำลอง เพื่อวัดว่ามันมี edge จริงไหม (ไม่มี UI)
+forward_test.py — เดินระบบแบบจำลอง เพื่อวัดว่ามันมี edge จริงไหม (ไม่มี UI)
 
-กติกาที่จำลอง — ตรงกับที่ gate.py บังคับตอนเทรดจริง:
-    พอร์ตตั้งต้น 5,000 USD · เสี่ยง 1.5%/ไม้ = 75 USD · สูงสุด 2 ไม้/วัน · QQQ อย่างเดียว
-    เปิดไม้เมื่อ verdict = ARMED เท่านั้น · เข้าที่ "กำแพง" ตามที่ plan บอก ไม่ใช่ราคาตลาดตอนนั้น
+รองรับสองระบบที่ตรงข้ามกัน ใช้โค้ดชุดเดียวกัน แยกกันแค่ ledger กับตัวตัดสิน:
+
+    fade      (gate.py)     เข้าที่กำแพงด้วย limit — รอราคามาหา ต้องแตะ entry ถึงจะได้ไม้
+    breakout  (breakout.py) ไล่ที่ราคาตลาดด้วย market — ได้ไม้ทันทีแต่กินราคาเปิดแท่งถัดไป
+
+    แยก ledger เพราะสองระบบมี win rate ต่างกันโดยธรรมชาติ (fade ชนะบ่อยแพ้ใหญ่ ·
+    breakout แพ้บ่อยชนะใหญ่) รวมกันแล้วสถิติทั้งคู่จะอ่านไม่ได้ทั้งคู่
+
+กติกาที่จำลอง — ตรงกับที่ประตูบังคับตอนเทรดจริง:
+    พอร์ตตั้งต้น 5,000 USD · ไม้ละ 100 หน่วยเท่ากันทั้ง LONG/SHORT (1 จุด = 100 USD)
+    สูงสุด 2 ไม้/วัน/ระบบ · QQQ อย่างเดียว · เปิดเมื่อ verdict = ARMED เท่านั้น
     ถือได้ไม่เกิน 3 วันทำการ เกินนั้นปิดที่ราคาตลาด
 
-วัดผลเป็น R ไม่ใช่ราคา option:
-    ไม้นี้ชนะ = ราคาถึงเป้าก่อน invalidate → +plan_r × 75 USD
-    ไม้นี้แพ้ = ราคาถึง invalidate ก่อน   → −75 USD
-    เหตุผลที่ไม่จำลองราคา option: ต้องเดา IV/spread/fill ซึ่งจะกลายเป็นการวัดสมมติฐานของตัวเอง
-    สิ่งที่อยากรู้จริงคือ "สัญญาณนี้ถูกทางกี่ครั้ง" ซึ่งวัดที่ underlying ได้ตรงกว่า
+จำลองที่ underlying ไม่ใช่ราคา option:
+    เหตุผล: ต้องเดา IV/spread ซึ่งจะกลายเป็นการวัดสมมติฐานของตัวเอง
+    สิ่งที่อยากรู้คือ "สัญญาณถูกทางกี่ครั้ง" ซึ่งวัดที่ underlying ได้ตรงกว่า
+    แลกมาด้วยการที่ตัวเลขนี้ไม่มี theta / IV crush — ห้ามอ่านว่าเป็นผลตอบแทนจริง
 
-การตัดสินแพ้/ชนะใช้แท่ง 5 นาที ไม่ใช่ High/Low รายวัน:
-    แท่งรายวันบอกไม่ได้ว่าอะไรโดนก่อน ถ้าวันนั้นแตะทั้งเป้าและ invalidate
-    และมันยังนับราคาที่เกิด "ก่อน" เราเข้าไม้ด้วย ซึ่งเป็นการมองอนาคตย้อนหลัง
+การตัดสินใช้แท่ง 5 นาที ไม่ใช่ High/Low รายวัน:
+    แท่งรายวันบอกไม่ได้ว่าอะไรโดนก่อนถ้าวันนั้นแตะทั้งเป้าและ invalidate
+    และมันนับราคาที่เกิด "ก่อน" เราเข้าไม้ด้วย ซึ่งเป็นการมองอนาคตย้อนหลัง
+
+ต้องเช็ค fill ก่อนเสมอ:
+    ไม้ fade ตั้ง entry ไว้ที่กำแพงซึ่งราคาอาจไม่เคยไปแตะ — ถ้าไม่เช็คแล้วนับผลไปเลย
+    เท่ากับนับไม้ที่ไม่เคยได้เข้าจริงเข้าไปในสถิติ (บั๊กเดิมของไฟล์นี้ก่อน 2026-08-14)
 """
 
 from __future__ import annotations
@@ -35,7 +46,28 @@ QTY = 100
 MAX_TRADES_PER_DAY = 2
 MAX_HOLD_DAYS = 3
 SYMBOL = "QQQ"
-LEDGER = os.path.join("forward_test", "ledger.json")
+
+# ── ระบบที่รองรับ ──
+#   entry: "limit"  = ต้องรอราคาแตะ entry ถึงจะได้ไม้ (ไม่แตะ = ไม่ได้เข้า)
+#          "market" = ได้ไม้ทันทีที่ราคาเปิดของแท่งถัดไป (สะท้อน slippage ของการไล่)
+SYSTEMS = {
+    "fade":     {"ledger": os.path.join("forward_test", "ledger.json"),
+                 "entry": "limit",  "label": "Fade (รอที่กำแพง)"},
+    "breakout": {"ledger": os.path.join("forward_test", "ledger_breakout.json"),
+                 "entry": "market", "label": "Breakout (ไล่ตามการทะลุ)"},
+}
+DEFAULT_SYSTEM = "fade"
+LEDGER = SYSTEMS[DEFAULT_SYSTEM]["ledger"]     # คงชื่อเดิมไว้ ของเก่าเรียกอยู่
+
+
+def system_cfg(system: str = DEFAULT_SYSTEM) -> dict:
+    if system not in SYSTEMS:
+        raise ValueError(f"ไม่รู้จักระบบ {system!r} — มีแค่ {list(SYSTEMS)}")
+    return SYSTEMS[system]
+
+
+def ledger_path(system: str = DEFAULT_SYSTEM) -> str:
+    return system_cfg(system)["ledger"]
 
 
 # ════════════════════════════════════════════════
@@ -111,7 +143,8 @@ def add_business_days(start: datetime, days: int) -> datetime:
 # ════════════════════════════════════════════════
 # เปิดไม้
 # ════════════════════════════════════════════════
-def record(trades: list[dict], g: dict, now: datetime | None = None) -> dict | None:
+def record(trades: list[dict], g: dict, now: datetime | None = None,
+           system: str = DEFAULT_SYSTEM) -> dict | None:
     """
     เปิดไม้จำลองถ้า verdict = ARMED และกติกาอนุญาต — คืน trade ที่เพิ่งเปิด หรือ None
 
@@ -145,6 +178,7 @@ def record(trades: list[dict], g: dict, now: datetime | None = None) -> dict | N
 
     t = {
         "id": f"{sym}-{now:%Y%m%d-%H%M%S}",
+        "system": system,
         "symbol": sym,
         "date": today,
         "opened": now.isoformat(timespec="seconds"),
@@ -158,6 +192,7 @@ def record(trades: list[dict], g: dict, now: datetime | None = None) -> dict | N
         "risk_usd": round(abs(round(p["ideal_entry"], 2) - round(p["invalidation"], 2)) * QTY, 2),
         "spot_at_signal": round(p["spot"], 2),
         "status": "open",
+        "filled_at": None, "fill_price": None,
         "closed_date": None, "closed_at": None, "exit": None,
         "realized_r": None, "pnl_usd": None, "note": "",
     }
@@ -169,7 +204,10 @@ def record(trades: list[dict], g: dict, now: datetime | None = None) -> dict | N
 # ปิดไม้
 # ════════════════════════════════════════════════
 def _bars_5m(symbol: str, start: datetime, end: datetime):
-    """แท่ง 5 นาทีจาก yfinance — คืน list[(ts_utc, high, low, close)] เรียงตามเวลา"""
+    """
+    แท่ง 5 นาทีจาก yfinance — คืน list[(ts_utc, open, high, low, close)] เรียงตามเวลา
+    ต้องมี open ด้วยเพราะ market order เข้าที่ราคาเปิดของแท่งถัดไป ไม่ใช่ราคาที่เห็นตอนสัญญาณ
+    """
     import yfinance as yf
 
     df = yf.download(symbol, interval="5m",
@@ -184,9 +222,9 @@ def _bars_5m(symbol: str, start: datetime, end: datetime):
         idx = idx.tz_localize("UTC")
     else:
         idx = idx.tz_convert("UTC")
-    return [(ts.to_pydatetime(), float(h), float(l), float(c))
-            for ts, h, l, c in zip(idx, df["High"], df["Low"], df["Close"])
-            if h == h and l == l]                     # ตัด NaN
+    return [(ts.to_pydatetime(), float(o), float(h), float(l), float(c))
+            for ts, o, h, l, c in zip(idx, df["Open"], df["High"], df["Low"], df["Close"])
+            if h == h and l == l and o == o]          # ตัด NaN
 
 
 def resolve(trades: list[dict], bars_fn=_bars_5m, now: datetime | None = None) -> list[dict]:
@@ -210,15 +248,44 @@ def resolve(trades: list[dict], bars_fn=_bars_5m, now: datetime | None = None) -
             t["note"] = f"ดึงราคาไม่ได้: {type(e).__name__}"
             continue
 
-        bars = [b for b in bars if b[0] > opened]       # นับเฉพาะหลังเข้าไม้ ไม่มองย้อนหลัง
+        bars = [b for b in bars if b[0] > opened and b[0] <= deadline]
         if not bars:
+            if now >= deadline:                         # หมดเวลาโดยไม่มีแท่งเลย
+                t.update(status="no_fill", note="ไม่มีข้อมูลราคาในช่วงที่ถือ")
+                closed.append(t)
             continue
 
         long_ = t["side"] == "LONG"
+        entry = t["entry"]
+
+        # ── 1) หา fill ก่อน — ยังไม่ได้เข้าไม้ก็ยังไม่มีอะไรให้ชนะหรือแพ้ ──
+        # limit  : ต้องมีแท่งที่ราคาแตะ entry (lo ≤ entry ≤ hi)
+        # market : ได้ที่ราคาเปิดของแท่งถัดไป — สะท้อนราคาที่ขยับหนีระหว่างสัญญาณกับการกดจริง
+        cfg = system_cfg(t.get("system") or DEFAULT_SYSTEM)
+        if cfg["entry"] == "market":
+            fill_i, fill_px = 0, bars[0][1]             # bars[i] = (ts, open, hi, lo, close)
+        else:
+            fill_i = fill_px = None
+            for i, (ts, _o, hi, lo, _c) in enumerate(bars):
+                if lo <= entry <= hi:
+                    fill_i, fill_px = i, entry
+                    break
+
+        if fill_i is None:
+            if now >= deadline:
+                t.update(status="no_fill", exit=None, realized_r=None, pnl_usd=None,
+                         closed_at=bars[-1][0].isoformat(timespec="seconds"),
+                         closed_date=bars[-1][0].strftime("%Y-%m-%d"),
+                         note=f"ราคาไม่เคยแตะ entry {entry:,.2f} จนหมดเวลา")
+                closed.append(t)
+            continue                                    # ยังไม่หมดเวลา รอรอบหน้า
+
+        t["filled_at"] = bars[fill_i][0].isoformat(timespec="seconds")
+        t["fill_price"] = round(fill_px, 2)
+
+        # ── 2) เดินต่อจากแท่งที่ fill (รวมแท่งนั้นด้วย — แท่งเดียวแตะทั้ง entry และ stop ได้) ──
         hit = None
-        for ts, hi, lo, close in bars:
-            if ts > deadline:
-                break
+        for ts, _o, hi, lo, close in bars[fill_i:]:
             # ตรวจ invalidate ก่อนเป้าเสมอเมื่ออยู่ในแท่งเดียวกัน — แท่ง 5 นาทีก็ยังบอกลำดับในแท่งไม่ได้
             # เลือกทางที่แย่กว่าไว้ก่อน จะได้ไม่หลอกตัวเอง
             if (long_ and lo <= t["invalidation"]) or (not long_ and hi >= t["invalidation"]):
@@ -229,16 +296,18 @@ def resolve(trades: list[dict], bars_fn=_bars_5m, now: datetime | None = None) -
                 break
 
         if hit is None and now >= deadline:
-            last_ts, _, _, last_close = bars[-1]
-            hit = ("timeout", last_close, last_ts)
+            last = bars[-1]
+            hit = ("timeout", last[4], last[0])
 
         if hit is None:
             continue
 
         status, exit_px, ts = hit
-        # P&L คิดจากราคาที่เคลื่อน × จำนวนหน่วย — ตรงกับที่ถือจริง ไม่ต้องผ่าน R
-        move = (exit_px - t["entry"]) if long_ else (t["entry"] - exit_px)
-        risk_pts = abs(t["entry"] - t["invalidation"])
+        # P&L คิดจากราคาที่เคลื่อน × จำนวนหน่วย โดยนับจาก "ราคาที่ได้จริง" ไม่ใช่ราคาที่ตั้งไว้
+        # market order จะต่างจาก entry เสมอ — ถ้าใช้ entry จะซ่อน slippage ของการไล่
+        fill = t["fill_price"]
+        move = (exit_px - fill) if long_ else (fill - exit_px)
+        risk_pts = abs(fill - t["invalidation"])
         qty = t.get("qty") or QTY
         r = (move / risk_pts) if risk_pts else 0.0
         t.update(status=status, exit=round(exit_px, 2),
@@ -257,9 +326,15 @@ def stats(trades: list[dict], month: str | None = None) -> dict:
     sel = [t for t in trades if month is None or t["date"].startswith(month)]
     done = [t for t in sel if t["status"] in ("win", "loss", "timeout")
             and t.get("realized_r") is not None]
+    # no_fill = สัญญาณเกิดแต่ไม่เคยได้เข้าไม้ — ไม่ใช่แพ้ ไม่ใช่ชนะ ต้องแยกออกจากสถิติ
+    # แต่ต้องนับให้เห็น: ระบบที่ส่งสัญญาณแล้วไม่เคย fill คือระบบที่ใช้จริงไม่ได้
+    no_fill = [t for t in sel if t["status"] == "no_fill"]
     out = {
         "month": month, "n_all": len(sel), "n_closed": len(done),
         "n_open": sum(1 for t in sel if t["status"] == "open"),
+        "n_no_fill": len(no_fill),
+        "fill_rate": (len(done) / (len(done) + len(no_fill))
+                      if (done or no_fill) else None),
         "wins": 0, "losses": 0, "timeouts": 0, "win_rate": None,
         "expectancy_r": None, "total_r": 0.0, "pnl_usd": 0.0,
         "avg_win_r": None, "avg_loss_r": None, "rr": None, "breakeven_wr": None,
@@ -311,7 +386,8 @@ def render_text(s: dict) -> str:
          f"${ACCOUNT_START:,.0f} · ไม้ละ {QTY} หน่วยเท่ากันทั้ง LONG/SHORT (1 จุด = ${QTY})",
          "=" * 74,
          f"  ไม้ที่ปิดแล้ว     {s['n_closed']}  (ชนะ {s['wins']} · แพ้ {s['losses']} "
-         f"· หมดเวลา {s['timeouts']})" + (f"  · ยังค้าง {s['n_open']}" if s["n_open"] else ""),
+         f"· หมดเวลา {s['timeouts']})" + (f"  · ยังค้าง {s['n_open']}" if s["n_open"] else "")
+         + (f"  · ไม่ได้ fill {s['n_no_fill']}" if s.get("n_no_fill") else ""),
          f"  Win rate         {s['win_rate']*100:.1f}%",
          f"  Expectancy       {s['expectancy_r']:+.3f}R ต่อไม้",
          f"  รวมทั้งเดือน      {s['total_r']:+.2f}R = ${s['pnl_usd']:+,.2f} "
@@ -322,6 +398,9 @@ def render_text(s: dict) -> str:
         L += [f"  RR จริง          1:{s['rr']:.2f}",
               f"  ต้องชนะเกิน      {s['breakeven_wr']*100:.1f}% ถึงจะเท่าทุน "
               f"({'ผ่าน' if s['win_rate'] > s['breakeven_wr'] else 'ยังไม่ผ่าน'})"]
+    if s.get("fill_rate") is not None and s.get("n_no_fill"):
+        L.append(f"  Fill rate        {s['fill_rate']*100:.1f}%  "
+                 f"({s['n_no_fill']} สัญญาณไม่เคยได้เข้าไม้จริง)")
     L += ["=" * 74]
     if s["n_closed"] < 20:
         L.append(f"⚠️ {s['n_closed']} ไม้ยังน้อยเกินกว่าจะสรุปว่ามี edge — ที่ win rate ระดับนี้ "

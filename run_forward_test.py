@@ -13,6 +13,7 @@ import argparse
 import sys
 from datetime import datetime, timezone
 
+import breakout
 import forward_test as ft
 import gate
 import snapshot
@@ -110,21 +111,28 @@ def main() -> int:
     ap.add_argument("cmd", choices=["record", "resolve", "report"])
     ap.add_argument("--symbol", default=ft.SYMBOL)
     ap.add_argument("--month", default=None, help="YYYY-MM · ไม่ใส่ = เดือนนี้ (report)")
-    ap.add_argument("--ledger", default=ft.LEDGER)
+    ap.add_argument("--system", default=ft.DEFAULT_SYSTEM, choices=list(ft.SYSTEMS),
+                    help="ระบบที่จะเดิน — fade (รอที่กำแพง) หรือ breakout (ไล่ตามการทะลุ)")
+    ap.add_argument("--ledger", default=None,
+                    help="ไม่ใส่ = ใช้ ledger ประจำระบบที่เลือก")
     ap.add_argument("--email", action="store_true", help="ส่งรายงานเข้าเมล (report)")
     args = ap.parse_args()
 
-    trades = ft.load(args.ledger)
+    ledger = args.ledger or ft.ledger_path(args.system)
+    trades = ft.load(ledger)
     before = len(trades)
+    print(f"  ระบบ: {ft.system_cfg(args.system)['label']}  ·  ledger {ledger}")
 
     if args.cmd == "record":
         snap = snapshot.build_snapshot(args.symbol)
         if snap.get("error"):
             print(f"ดึงข้อมูลไม่ได้: {snap['error']}", file=sys.stderr)
             return 1
-        g = gate.evaluate(snap)
+        # ตัวตัดสินคนละตัวตามระบบ — โครงของ verdict/plan เหมือนกัน record จึงใช้ร่วมได้
+        evaluator = breakout.evaluate if args.system == "breakout" else gate.evaluate
+        g = evaluator(snap)
         print(f"  {args.symbol}: {g['verdict']} — {g['headline']}")
-        t = ft.record(trades, g)
+        t = ft.record(trades, g, system=args.system)
         if t:
             print(f"  เปิดไม้จำลอง {t['side']} @ {t['entry']:,.2f} · "
                   f"invalidate {t['invalidation']:,.2f} · เป้า {t['target']:,.2f} "
@@ -136,8 +144,11 @@ def main() -> int:
         closed = ft.resolve(trades)
         print(f"  ปิดไป {len(closed)} ไม้" if closed else "  ไม่มีไม้ที่ถึงเงื่อนไขปิด")
         for t in closed:
-            print(f"    {t['id']} {t['status']} @ {t['exit']:,.2f} "
-                  f"{t['realized_r']:+.2f}R ${t['pnl_usd']:+,.2f}")
+            if t["status"] == "no_fill":
+                print(f"    {t['id']} ไม่ได้ fill — {t.get('note','')}")
+            else:
+                print(f"    {t['id']} {t['status']} @ {t['exit']:,.2f} "
+                      f"{t['realized_r']:+.2f}R ${t['pnl_usd']:+,.2f}")
 
     else:  # report
         month = args.month or datetime.now(timezone.utc).strftime("%Y-%m")
@@ -153,8 +164,8 @@ def main() -> int:
     if len(trades) != before or args.cmd == "resolve":
         # อ่านไฟล์ใหม่แล้ว merge ก่อนเขียนเสมอ — ระหว่างที่เราคำนวณอยู่ (ดึงราคา yfinance
         # ใช้เวลาหลายวินาที) อีก workflow อาจเขียนไฟล์นี้ไปแล้ว ถ้าเขียนทับตรง ๆ ไม้ของเขาหาย
-        ft.save(ft.merge(trades, ft.load(args.ledger)), args.ledger)
-        final = ft.load(args.ledger)
+        ft.save(ft.merge(trades, ft.load(ledger)), ledger)
+        final = ft.load(ledger)
         print(f"  เขียน ledger แล้ว ({len(final)} ไม้"
               + (f" · merge เพิ่มจากดิสก์ {len(final) - len(trades)} ไม้"
                  if len(final) != len(trades) else "") + ")")

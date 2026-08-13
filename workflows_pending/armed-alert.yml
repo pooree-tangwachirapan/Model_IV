@@ -103,7 +103,12 @@ jobs:
 
             # || true ทุกคำสั่ง — รอบเดียวพังต้องไม่ทำให้ลูปทั้งวันตาย
             python send_report.py --no-cme $FLAGS || echo "!! send_report พังรอบนี้ ข้ามไป"
-            python run_forward_test.py record     || echo "!! record พังรอบนี้ ข้ามไป"
+            # สองระบบเดินคู่กัน คนละ ledger — วันหนึ่งจะมีอย่างมากอันเดียวที่ ARMED
+            # (fade ต้องการราคาในโซน · breakout ต้องการนอกโซน) เรียกทั้งคู่ทุกรอบได้เลย
+            python run_forward_test.py record --system fade \
+              || echo "!! record fade พังรอบนี้ ข้ามไป"
+            python run_forward_test.py record --system breakout \
+              || echo "!! record breakout พังรอบนี้ ข้ามไป"
 
             now=$(date -u +%s)
             [ "$now" -ge "$END" ] && break

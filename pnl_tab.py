@@ -26,16 +26,28 @@ def _stat_row(s: dict):
 
 def render_pnl_tab():
     st.subheader("📊 P&L — Forward Test")
-    st.caption(f"เดินระบบ Cockpit แบบจำลอง · {ft.SYMBOL} · พอร์ต ${ft.ACCOUNT_START:,.0f} · "
+
+    # สองระบบเดินคู่กัน แต่ **ห้ามรวมสถิติ** — fade ชนะบ่อยแพ้ใหญ่ / breakout แพ้บ่อยชนะใหญ่
+    # รวมกันแล้ว win rate กับ expectancy อ่านไม่ได้ทั้งคู่
+    labels = {k: v["label"] for k, v in ft.SYSTEMS.items()}
+    system = st.radio("ระบบ", list(ft.SYSTEMS), horizontal=True, key="pnl_system",
+                      format_func=lambda k: labels[k])
+    cfg = ft.system_cfg(system)
+
+    st.caption(f"{cfg['label']} · {ft.SYMBOL} · พอร์ต ${ft.ACCOUNT_START:,.0f} · "
                f"**ไม้ละ {ft.QTY} หน่วยเท่ากันทั้ง LONG/SHORT** (1 จุด = ${ft.QTY}) · "
-               f"สูงสุด {ft.MAX_TRADES_PER_DAY} ไม้/วัน · ถือไม่เกิน {ft.MAX_HOLD_DAYS} วันทำการ")
+               f"สูงสุด {ft.MAX_TRADES_PER_DAY} ไม้/วัน · ถือไม่เกิน {ft.MAX_HOLD_DAYS} วันทำการ · "
+               + ("เข้าด้วย **limit ที่กำแพง** (ไม่แตะ = ไม่ได้ไม้)" if cfg["entry"] == "limit"
+                  else "เข้าด้วย **market** ที่ราคาเปิดแท่งถัดไป (กิน slippage เต็ม ๆ)"))
     st.caption("⚠️ จำลองถือ underlying ตรง ๆ **ไม่ได้จำลอง option** — ไม่มี theta / IV crush / สเปรด · "
                "ตอบว่า *สัญญาณถูกทางมั้ย* ไม่ได้ตอบว่า *เทรด option ตามนี้แล้วได้เท่านี้*")
+    st.caption("⚠️ **ห้ามเทียบ win rate ข้ามระบบ** — สองระบบนี้ออกแบบมาให้ชนะคนละแบบ "
+               "เทียบกันได้ที่ expectancy เท่านั้น")
 
-    trades = ft.load()
+    trades = ft.load(cfg["ledger"])
     if not trades:
-        st.info("ยังไม่มีข้อมูลใน `forward_test/ledger.json` — "
-                "workflow **Forward Test** จะเริ่มเขียนเมื่อ verdict ขึ้น ARMED ครั้งแรก")
+        st.info(f"ยังไม่มีข้อมูลใน `{cfg['ledger']}` — "
+                "จะเริ่มเขียนเมื่อ verdict ของระบบนี้ขึ้น ARMED ครั้งแรก")
         return
 
     months = sorted({t["date"][:7] for t in trades}, reverse=True)
