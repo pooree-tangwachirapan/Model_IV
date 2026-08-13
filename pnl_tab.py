@@ -34,8 +34,10 @@ def render_pnl_tab():
                       format_func=lambda k: labels[k])
     cfg = ft.system_cfg(system)
 
-    st.caption(f"{cfg['label']} · {ft.SYMBOL} · พอร์ต ${ft.ACCOUNT_START:,.0f} · "
-               f"**ไม้ละ {ft.QTY} หน่วยเท่ากันทั้ง LONG/SHORT** (1 จุด = ${ft.QTY}) · "
+    # ต้อง escape $ เป็น \$ — Streamlit ตีความ $...$ เป็น LaTeX แล้วกลืน markdown ที่อยู่ระหว่างนั้น
+    # (เห็นผลจริง: "**ตัวหนา**" ระหว่าง $5,000 กับ $100 กลายเป็นข้อความมี ** ติดมา และ $ หายไป)
+    st.caption(f"{cfg['label']} · {ft.SYMBOL} · พอร์ต \\${ft.ACCOUNT_START:,.0f} · "
+               f"**ไม้ละ {ft.QTY} หน่วยเท่ากันทั้ง LONG/SHORT** (1 จุด = \\${ft.QTY}) · "
                f"สูงสุด {ft.MAX_TRADES_PER_DAY} ไม้/วัน · ถือไม่เกิน {ft.MAX_HOLD_DAYS} วันทำการ · "
                + ("เข้าด้วย **limit ที่กำแพง** (ไม่แตะ = ไม่ได้ไม้)" if cfg["entry"] == "limit"
                   else "เข้าด้วย **market** ที่ราคาเปิดแท่งถัดไป (กิน slippage เต็ม ๆ)"))
