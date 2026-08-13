@@ -87,6 +87,27 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def add_business_days(start: datetime, days: int) -> datetime:
+    """
+    บวก "วันทำการ" ไม่ใช่วันปฏิทิน
+
+    เดิมใช้ timedelta(days=3) ตรง ๆ ทั้งที่เอกสารเขียนว่า 3 วันทำการ —
+    ไม้ที่เปิดวันศุกร์จะได้เวลาถือจริงแค่วันจันทร์วันเดียว (เสาร์อาทิตย์ตลาดปิด
+    ไม่มีแท่งให้เดิน) แล้วโดนปิดด้วย timeout ทั้งที่ยังไม่ได้พิสูจน์อะไร
+    → สถิติเอียงไปทาง "ไม่มี edge" โดยไม่มีใครรู้
+
+    ไม่นับวันหยุดนักขัตฤกษ์ของตลาด — ถ้าตกวันหยุดจะได้เวลาถือน้อยกว่าที่ตั้งใจ 1 วัน
+    รับได้เพราะพลาดไปทางอนุรักษ์นิยม (ปิดเร็วกว่า ไม่ใช่ถือนานกว่า)
+    """
+    d = start
+    left = days
+    while left > 0:
+        d += timedelta(days=1)
+        if d.weekday() < 5:          # 0=จันทร์ .. 4=ศุกร์
+            left -= 1
+    return d
+
+
 # ════════════════════════════════════════════════
 # เปิดไม้
 # ════════════════════════════════════════════════
@@ -102,6 +123,16 @@ def record(trades: list[dict], g: dict, now: datetime | None = None) -> dict | N
         return None
     p = g.get("plan")
     if not p or not p.get("plan_r"):
+        return None
+
+    # gate.build_plan เคยเปลี่ยนชื่อ key มาแล้วครั้งหนึ่ง (entry_ref -> ideal_entry)
+    # ถ้าเปลี่ยนอีกโดยไม่แก้ตรงนี้ KeyError จะทำให้ทั้ง workflow ล้ม และวันนั้นไม่มีใครเฝ้า
+    # → ข้ามไม้ไปพร้อมบอกว่าขาดอะไร ดีกว่าพังทั้ง job
+    need = ("side", "ideal_entry", "invalidation", "target", "spot")
+    missing = [k for k in need if k not in p]
+    if missing:
+        print(f"  ข้ามการเปิดไม้: plan ขาด key {missing} — "
+              f"gate.build_plan เปลี่ยน schema แล้วแต่ forward_test ยังไม่ตาม")
         return None
 
     sym = g.get("symbol") or SYMBOL
@@ -171,7 +202,7 @@ def resolve(trades: list[dict], bars_fn=_bars_5m, now: datetime | None = None) -
         opened = datetime.fromisoformat(t["opened"])
         if opened.tzinfo is None:
             opened = opened.replace(tzinfo=timezone.utc)
-        deadline = opened + timedelta(days=MAX_HOLD_DAYS)
+        deadline = add_business_days(opened, MAX_HOLD_DAYS)
 
         try:
             bars = bars_fn(t["symbol"], opened, min(now, deadline))

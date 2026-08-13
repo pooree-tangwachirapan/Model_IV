@@ -7,6 +7,7 @@ cockpit_tab.py — Tab "Cockpit" : จาก "ตลาดเป็นยัง�
 
 import streamlit as st
 
+import breakout
 import gate
 import snapshot
 
@@ -207,3 +208,61 @@ def render_cockpit_tab(sym: str, name: str):
 
     st.caption("⚠️ **ARMED ไม่ใช่คำสั่งให้เข้า** — แปลว่าโครงสร้างของกระดานไม่ได้ห้ามไว้เท่านั้น "
                "ตัวจับจังหวะจริงยังเป็นการที่ราคาไปถึงกำแพงแล้วปฏิเสธ ซึ่งต้องดูบนกราฟเอง · ไม่ใช่คำแนะนำการลงทุน")
+
+    _render_breakout(snap, g)
+
+
+def _render_breakout(snap: dict, fade_g: dict):
+    """
+    ระบบที่สอง — ไล่ตามการทะลุ (คู่ตรงข้ามของ fade ด้านบน)
+    วางไว้ท้ายแท็บเดียวกันโดยตั้งใจ: ทั้งวันจะมีอย่างมากอันเดียวที่ ARMED
+    เห็นพร้อมกันแล้วรู้ทันทีว่า "วันนี้เป็นเกมไหน" ไม่ต้องสลับแท็บไปเดา
+    """
+    st.divider()
+    b = breakout.evaluate(snap)
+    col = {"ARMED": "#2ecc71", "WATCH": "#e67e22", "STAND_DOWN": "#e74c3c"}.get(b["verdict"], "#7f8c9a")
+
+    st.markdown(f"### 🚀 ระบบที่ 2 — Breakout (ไล่ตามการทะลุ)")
+    st.markdown(
+        f'<span style="color:{col};border:1px solid {col};border-radius:4px;padding:2px 9px;'
+        f'font-size:12px;font-weight:700">{b["verdict"].replace("_"," ")}</span>'
+        f'<span style="color:#e8f2ff;font-size:14px;font-weight:600;margin-left:10px">'
+        f'{b["headline"]}</span>', unsafe_allow_html=True)
+    if b.get("reason"):
+        st.caption(b["reason"])
+
+    clash = breakout.conflicts_with(fade_g, b)
+    if clash:
+        st.error(f"🐛 {clash}")
+
+    with st.expander("ประตูของระบบ Breakout", expanded=(b["verdict"] == "ARMED")):
+        for r in b["hard"]:
+            st.markdown(f"{'✅' if r['ok'] else '❌'} **{r['label']}** — `{r['value']}`  \n"
+                        f"<span style='color:#7e93b5;font-size:11.5px'>{r['note']}</span>",
+                        unsafe_allow_html=True)
+        if b["soft"]:
+            st.markdown("**ประตูอ่อน — ไม่ผ่าน = ลดไซส์ครึ่ง**")
+            for r in b["soft"]:
+                st.markdown(f"{'✅' if r['ok'] else '⚠️'} **{r['label']}** — `{r['value']}`",
+                            unsafe_allow_html=True)
+
+    p = b.get("plan")
+    if p:
+        a, c, d, e = st.columns(4)
+        a.metric("ไล่ที่ราคา", f"{p['ideal_entry']:,.2f}",
+                 help="ระบบนี้เข้าที่ราคาตลาด ไม่ได้รอราคามาหา — รอแล้วมันไม่กลับมา")
+        c.metric("Stop", f"{p['invalidation']:,.2f}",
+                 help=f"ราคากลับเข้ามาในกำแพงลึก {breakout.STOP_EM_FRAC}×EM = การทะลุเป็นของปลอม")
+        d.metric("เป้า", f"{p['target']:,.2f}", help=p["target_src"])
+        e.metric("เรขาคณิต", f"{p['plan_r']:.2f}R",
+                 help=f"ต้อง ≥ {breakout.MIN_PLAN_R:g}R (สูงกว่า fade เพราะระบบนี้แพ้บ่อยกว่า)")
+
+    st.info(
+        f"**หน้าต่างไล่ตามแคบมากโดยตั้งใจ: {breakout.BREACH_MIN_EM:.2f}–{breakout.BREACH_MAX_EM:.2f}×EM "
+        f"จากกำแพง**\n\n"
+        f"ใกล้กว่านี้ยังบอกไม่ได้ว่าทะลุจริงหรือแค่แหย่ · ไกลกว่านี้เรขาคณิตให้ไม่ถึง "
+        f"{breakout.MIN_PLAN_R:g}R แล้ว (stop ห่างขึ้นเรื่อย ๆ ขณะที่เป้าใกล้เข้ามา) "
+        f"เพดานนี้**คำนวณจาก stop/target/R ไม่ได้ตั้งมือ** จึงขัดกันเองไม่ได้")
+    st.caption("⚠️ ระบบนี้ **แพ้บ่อยชนะน้อยครั้งแต่ใหญ่** — ห้ามเอา win rate ไปเทียบกับ fade ด้านบน "
+               "วัดกันที่ expectancy เท่านั้น · ยังไม่มี forward test รองรับ ตัวเลข R เป็นเรขาคณิตล้วน "
+               "ไม่ใช่ผลที่พิสูจน์แล้ว")

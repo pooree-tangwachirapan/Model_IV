@@ -1,0 +1,152 @@
+name: Armed Alert (intraday)
+
+# เช็คทุก 15 นาทีตลอดหน้าต่างเทรด · ส่งเมลเฉพาะตอนเพิ่งเข้าเกณฑ์ · บันทึก forward test ไปด้วย
+#
+# ทำไมวนลูปในงานเดียว ไม่ใช่ตั้ง cron 17 รอบ:
+#   ของเดิมตั้ง cron ไว้ 17 รอบ/วัน แต่วันจันทร์ 10 ส.ค. GitHub ยิงจริงแค่ 5 รอบ
+#   (15:27 · 16:06 · 17:06 · 18:01 · 19:11 UTC) อีก 12 รอบหายไปเฉย ๆ ไม่ใช่ cancelled
+#   = GitHub ไม่ได้แค่ดีเลย์ มันทิ้งรอบทิ้ง ยิงจริงราวชั่วโมงละครั้งไม่ว่าจะตั้งถี่แค่ไหน
+#   → ให้ cron ยิงครั้งเดียวพอ แล้ว "งาน" นั้นนอนรอเองทุก 15 นาที ซึ่งควบคุมได้จริง
+#
+# cron 3 ตัวเป็นตัวสำรองซ้อนกัน เผื่อตัวแรกโดนทิ้ง — ตัวที่มาทีหลังเห็นว่าหน้าต่างปิดแล้วก็ออกเอง
+# concurrency ตั้ง cancel-in-progress: false เพื่อไม่ให้ตัวสำรองไปฆ่างานที่กำลังวิ่งอยู่
+#
+# ข้อจำกัดที่เหลือ: cron เป็น UTC ไม่รู้จัก DST — ตารางนี้ตั้งสำหรับ EDT (มี.ค.–พ.ย.)
+# ช่วง EST ต้องบวก 1 ชม. ทุกบรรทัด รวมทั้ง WINDOW_END ด้านล่าง
+
+on:
+  schedule:
+    - cron: "18 14 * * 1-5"    # ตั้งใจให้เริ่ม 10:18 ET
+    - cron: "18 15 * * 1-5"    # สำรอง เผื่อรอบแรกโดนทิ้ง
+    - cron: "18 16 * * 1-5"    # สำรองอีกชั้น
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Symbols คั่นด้วย , (เช่น QQQ,SPY)"
+        required: false
+        default: "QQQ"
+      minutes:
+        description: "วนกี่นาที (ทดสอบ — ใส่ 1 เพื่อเช็ครอบเดียวแล้วจบ)"
+        required: false
+        default: "240"
+      always_send:
+        description: "ส่งแม้ไม่ ARMED และแม้สถานะไม่เปลี่ยน (ไว้ทดสอบ)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: armed-alert
+  cancel-in-progress: false
+
+permissions:
+  contents: write          # ต้องเขียน forward_test/ledger.json กลับเข้ารีโป
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330       # หน้าต่าง 4 ชม. + หัวท้าย
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install streamlit numpy pandas scipy plotly requests yfinance
+
+      - name: Restore gate state
+        uses: actions/cache/restore@v4
+        with:
+          path: .gate-state.json
+          key: gate-state-${{ github.run_id }}
+          restore-keys: gate-state-
+
+      - name: Poll every 15 minutes until the window closes
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          MAIL_TO:   ${{ secrets.MAIL_TO }}
+          SYMBOLS:   ${{ inputs.symbols || 'QQQ' }}
+          GATE_STATE_FILE: .gate-state.json
+          FLAGS: ${{ inputs.always_send == true && ' ' || '--armed-only --only-on-change' }}
+          RUN_MINUTES: ${{ inputs.minutes || '240' }}
+        run: |
+          set -u
+          WINDOW_END=$(date -u -d "18:35" +%s)          # ปิดหน้าต่าง 14:35 ET
+          HARD_STOP=$(( $(date -u +%s) + RUN_MINUTES * 60 ))
+          END=$(( WINDOW_END < HARD_STOP ? WINDOW_END : HARD_STOP ))
+
+          if [ "$(date -u +%s)" -ge "$END" ]; then
+            echo "หน้าต่างปิดไปแล้ว (ตอนนี้ $(date -u +%H:%M) UTC) — ออกเลย ไม่ต้องทำอะไร"
+            exit 0
+          fi
+
+          # นอนจนถึงนาทีที่ 7/22/37/52 ถัดไป — ให้จังหวะเช็คตรงขอบ 15 นาทีจริง ๆ
+          sleep_to_next_mark() {
+            m=$(date -u +%-M); s=$(date -u +%-S)
+            for t in 7 22 37 52; do
+              if [ "$m" -lt "$t" ]; then echo $(( (t - m) * 60 - s )); return; fi
+            done
+            echo $(( (67 - m) * 60 - s ))
+          }
+
+          n=0
+          while :; do
+            n=$((n + 1))
+            echo "───── รอบที่ $n · $(date -u +%H:%M:%S) UTC ─────"
+
+            # || true ทุกคำสั่ง — รอบเดียวพังต้องไม่ทำให้ลูปทั้งวันตาย
+            python send_report.py --no-cme $FLAGS || echo "!! send_report พังรอบนี้ ข้ามไป"
+            python run_forward_test.py record     || echo "!! record พังรอบนี้ ข้ามไป"
+
+            now=$(date -u +%s)
+            [ "$now" -ge "$END" ] && break
+            nap=$(sleep_to_next_mark)
+            [ "$(( now + nap ))" -ge "$END" ] && break
+            echo "นอน ${nap}s ถึงขอบถัดไป"
+            sleep "$nap"
+          done
+          echo "จบ — เช็คไปทั้งหมด $n รอบ"
+
+      - name: Save gate state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .gate-state.json
+          key: gate-state-${{ github.run_id }}
+
+      - name: Commit forward test ledger
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add forward_test/ledger.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "ledger ไม่เปลี่ยน — ไม่ต้อง commit"
+          else
+            git commit -m "forward test: เปิดไม้จำลอง [skip ci]"
+            # เดิมเป็น `git pull --rebase ... || true` แล้ว push ต่อ — `|| true` กลืน conflict
+            # พอ rebase ชนกับอีก workflow ที่เขียนไฟล์เดียวกัน repo ค้างกลางคัน
+            # แล้ว push ไปด้วย HEAD ของ remote → ไม้ที่เพิ่งบันทึกหายเงียบ (เกิดจริง 2026-08-12)
+            # ตอนนี้: rebase ต้องสำเร็จถึงจะ push · ล้มก็ abort แล้วลองใหม่ · ครบ 3 รอบถือว่าล้มจริง
+            pushed=""
+            for i in 1 2 3; do
+              if git pull --rebase --autostash origin "${GITHUB_REF_NAME}" \
+                 && git push origin "HEAD:${GITHUB_REF_NAME}"; then
+                pushed="yes"; break
+              fi
+              git rebase --abort 2>/dev/null || true
+              echo "push รอบ $i ไม่สำเร็จ — รอแล้วลองใหม่"
+              sleep $((i * 5))
+            done
+            if [ -z "$pushed" ]; then
+              echo "::error::push ledger ไม่สำเร็จหลังลอง 3 รอบ"
+              exit 1
+            fi
+          fi
