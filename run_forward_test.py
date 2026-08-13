@@ -91,8 +91,9 @@ def build_html(s: dict, trades: list[dict]) -> str:
         f'<div style="color:{TXT};font-size:22px;font-weight:700">📊 Forward Test — '
         f'{s["month"] or "ทั้งหมด"}</div>'
         f'<div style="color:{DIM};font-size:12px;margin:4px 0 18px">'
-        f'{ft.SYMBOL} · พอร์ตจำลอง ${ft.ACCOUNT_START:,.0f} · เสี่ยง {ft.RISK_PCT}%/ไม้ '
-        f'(${ft.RISK_USD:,.0f}) · สูงสุด {ft.MAX_TRADES_PER_DAY} ไม้/วัน · '
+        f'{ft.SYMBOL} · พอร์ตจำลอง ${ft.ACCOUNT_START:,.0f} · ไม้ละ {ft.QTY} หน่วย '
+        f'เท่ากันทั้ง LONG/SHORT (1 จุด = ${ft.QTY}) · '
+        f'สูงสุด {ft.MAX_TRADES_PER_DAY} ไม้/วัน · '
         f'ถือไม่เกิน {ft.MAX_HOLD_DAYS} วันทำการ</div>'
         f'{body}'
         f'<div style="color:{DIM};font-size:11px;line-height:1.6;border-top:1px solid {LINE};'
@@ -150,8 +151,13 @@ def main() -> int:
                  f"📊 Forward Test {month} — {ft.SYMBOL} {head}")
 
     if len(trades) != before or args.cmd == "resolve":
-        ft.save(trades, args.ledger)
-        print(f"  เขียน ledger แล้ว ({len(trades)} ไม้)")
+        # อ่านไฟล์ใหม่แล้ว merge ก่อนเขียนเสมอ — ระหว่างที่เราคำนวณอยู่ (ดึงราคา yfinance
+        # ใช้เวลาหลายวินาที) อีก workflow อาจเขียนไฟล์นี้ไปแล้ว ถ้าเขียนทับตรง ๆ ไม้ของเขาหาย
+        ft.save(ft.merge(trades, ft.load(args.ledger)), args.ledger)
+        final = ft.load(args.ledger)
+        print(f"  เขียน ledger แล้ว ({len(final)} ไม้"
+              + (f" · merge เพิ่มจากดิสก์ {len(final) - len(trades)} ไม้"
+                 if len(final) != len(trades) else "") + ")")
     return 0
 
 

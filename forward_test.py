@@ -25,7 +25,13 @@ from datetime import datetime, timedelta, timezone
 
 ACCOUNT_START = 5000.0
 RISK_PCT = 1.5
-RISK_USD = ACCOUNT_START * RISK_PCT / 100      # 75 USD ต่อไม้
+RISK_USD = ACCOUNT_START * RISK_PCT / 100      # 75 USD — เก็บไว้อ้างอิงไม้เก่าเท่านั้น
+
+# ขนาดไม้: หน่วยคงที่เท่ากันทั้ง LONG และ SHORT
+# ไม่ใช้ความเสี่ยงคงที่ (75 USD ทุกไม้) เพราะแบบนั้นขนาดไม้จะแปรผกผันกับระยะ stop
+# → ไม้ stop แคบได้ไซส์ใหญ่โดยอัตโนมัติ ทำให้ P&L รวมสะท้อน "ระยะ stop" มากกว่า "สัญญาณ"
+# หน่วยคงที่ = ทุกไม้มีน้ำหนักเท่ากันในสถิติ อ่านผลเป็นเงินได้ตรง ๆ (1 จุด = QTY USD)
+QTY = 100
 MAX_TRADES_PER_DAY = 2
 MAX_HOLD_DAYS = 3
 SYMBOL = "QQQ"
@@ -47,6 +53,34 @@ def save(trades: list[dict], path: str = LEDGER) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(trades, f, ensure_ascii=False, indent=1)
+
+
+_CLOSED = ("win", "loss", "timeout")
+
+
+def merge(mine: list[dict], theirs: list[dict]) -> list[dict]:
+    """
+    รวม ledger สองชุดโดยยึด id ไม่ใช่ข้อความในไฟล์
+
+    ทำไมต้องมี: มีสอง workflow เขียนไฟล์เดียวกัน (armed-alert เปิดไม้ ·
+    forward-test ปิดไม้) ถ้าทั้งคู่ commit ในช่วงเวลาใกล้กัน git จะ rebase ชนกัน
+    แล้วฝั่งที่แพ้หายไปทั้งไม้ — เคยเกิดจริง 2026-08-12
+    กติกา: ไม้ที่ "ปิดแล้ว" ชนะไม้ที่ยัง "เปิด" (ข้อมูลมากกว่า) · id ที่มีข้างเดียวเก็บไว้ทั้งคู่
+    """
+    by_id: dict[str, dict] = {}
+    for t in list(theirs) + list(mine):        # mine ทีหลัง = ได้สิทธิ์เขียนทับก่อน
+        tid = t.get("id")
+        if not tid:
+            continue
+        cur = by_id.get(tid)
+        if cur is None:
+            by_id[tid] = t
+            continue
+        # ฝั่งไหนปิดแล้วเอาฝั่งนั้น ถ้าปิดทั้งคู่หรือเปิดทั้งคู่ ใช้ mine (ตัวหลัง)
+        if cur.get("status") in _CLOSED and t.get("status") not in _CLOSED:
+            continue
+        by_id[tid] = t
+    return sorted(by_id.values(), key=lambda t: (t.get("opened") or "", t.get("id") or ""))
 
 
 def _utc_now() -> datetime:
@@ -88,7 +122,9 @@ def record(trades: list[dict], g: dict, now: datetime | None = None) -> dict | N
         "invalidation": round(p["invalidation"], 2),
         "target": round(p["target"], 2),
         "plan_r": round(p["plan_r"], 6),   # ใช้คูณเป็นเงิน — ปัดหยาบกว่านี้ P&L เพี้ยน
-        "risk_usd": RISK_USD,
+        "qty": QTY,
+        # เงินที่เสี่ยงจริงของไม้นี้ = ระยะถึง invalidate × จำนวนหน่วย (ต่างกันได้ทุกไม้)
+        "risk_usd": round(abs(round(p["ideal_entry"], 2) - round(p["invalidation"], 2)) * QTY, 2),
         "spot_at_signal": round(p["spot"], 2),
         "status": "open",
         "closed_date": None, "closed_at": None, "exit": None,
@@ -169,18 +205,15 @@ def resolve(trades: list[dict], bars_fn=_bars_5m, now: datetime | None = None) -
             continue
 
         status, exit_px, ts = hit
-        if status == "win":
-            r = t["plan_r"]
-        elif status == "loss":
-            r = -1.0
-        else:
-            move = (exit_px - t["entry"]) if long_ else (t["entry"] - exit_px)
-            risk_pts = abs(t["entry"] - t["invalidation"])
-            r = (move / risk_pts) if risk_pts else 0.0
+        # P&L คิดจากราคาที่เคลื่อน × จำนวนหน่วย — ตรงกับที่ถือจริง ไม่ต้องผ่าน R
+        move = (exit_px - t["entry"]) if long_ else (t["entry"] - exit_px)
+        risk_pts = abs(t["entry"] - t["invalidation"])
+        qty = t.get("qty") or QTY
+        r = (move / risk_pts) if risk_pts else 0.0
         t.update(status=status, exit=round(exit_px, 2),
                  closed_at=ts.isoformat(timespec="seconds"),
                  closed_date=ts.strftime("%Y-%m-%d"),
-                 realized_r=round(r, 3), pnl_usd=round(r * t["risk_usd"], 2))
+                 realized_r=round(r, 3), pnl_usd=round(move * qty, 2))
         closed.append(t)
     return closed
 
@@ -244,7 +277,7 @@ def render_text(s: dict) -> str:
                 f"(เปิดค้าง {s['n_open']} ไม้)\n"
                 "ยังไม่มีอะไรให้สรุป — ระบบเข้าไม้เฉพาะตอน ARMED ซึ่งเกิดไม่บ่อย")
     L = [f"Forward Test {s['month'] or 'ทั้งหมด'} — {SYMBOL} · พอร์ตจำลอง "
-         f"${ACCOUNT_START:,.0f} เสี่ยง {RISK_PCT}%/ไม้ (${RISK_USD:,.0f})",
+         f"${ACCOUNT_START:,.0f} · ไม้ละ {QTY} หน่วยเท่ากันทั้ง LONG/SHORT (1 จุด = ${QTY})",
          "=" * 74,
          f"  ไม้ที่ปิดแล้ว     {s['n_closed']}  (ชนะ {s['wins']} · แพ้ {s['losses']} "
          f"· หมดเวลา {s['timeouts']})" + (f"  · ยังค้าง {s['n_open']}" if s["n_open"] else ""),
@@ -262,6 +295,8 @@ def render_text(s: dict) -> str:
     if s["n_closed"] < 20:
         L.append(f"⚠️ {s['n_closed']} ไม้ยังน้อยเกินกว่าจะสรุปว่ามี edge — ที่ win rate ระดับนี้ "
                  "ช่วงความเชื่อมั่นยังกว้างมาก ถือเป็นการดูว่าระบบเดินได้ ไม่ใช่ว่ามันกำไร")
-    L.append("จำลองที่ underlying เป็นหน่วย R ไม่ได้จำลองราคา option · "
-             "แตะ invalidate กับเป้าในแท่งเดียวกันนับเป็นแพ้")
+    L.append(f"จำลองถือ {SYMBOL} ตรง ๆ {QTY} หน่วย/ไม้ **ไม่ได้จำลอง option** — "
+             "ไม่มี theta, IV crush, สเปรด · ตัวเลขนี้ตอบว่า 'สัญญาณถูกทางมั้ย' "
+             "ไม่ได้ตอบว่า 'เทรด option ตามนี้แล้วได้เท่านี้'")
+    L.append("แตะ invalidate กับเป้าในแท่งเดียวกันนับเป็นแพ้")
     return "\n".join(L)

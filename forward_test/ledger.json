@@ -9,14 +9,15 @@
   "invalidation": 726.16,
   "target": 719.0,
   "plan_r": 5.170878,
-  "risk_usd": 75.0,
+  "risk_usd": 116.0,
   "spot_at_signal": 723.41,
-  "status": "open",
-  "closed_date": null,
-  "closed_at": null,
-  "exit": null,
-  "realized_r": null,
-  "pnl_usd": null,
-  "note": ""
+  "status": "loss",
+  "closed_date": "2026-08-13",
+  "closed_at": "2026-08-13T13:35:00+00:00",
+  "exit": 726.16,
+  "realized_r": -1.0,
+  "pnl_usd": -116.0,
+  "note": "",
+  "qty": 100
  }
 ]

@@ -27,8 +27,10 @@ def _stat_row(s: dict):
 def render_pnl_tab():
     st.subheader("📊 P&L — Forward Test")
     st.caption(f"เดินระบบ Cockpit แบบจำลอง · {ft.SYMBOL} · พอร์ต ${ft.ACCOUNT_START:,.0f} · "
-               f"เสี่ยง {ft.RISK_PCT}%/ไม้ (${ft.RISK_USD:,.0f}) · "
+               f"**ไม้ละ {ft.QTY} หน่วยเท่ากันทั้ง LONG/SHORT** (1 จุด = ${ft.QTY}) · "
                f"สูงสุด {ft.MAX_TRADES_PER_DAY} ไม้/วัน · ถือไม่เกิน {ft.MAX_HOLD_DAYS} วันทำการ")
+    st.caption("⚠️ จำลองถือ underlying ตรง ๆ **ไม่ได้จำลอง option** — ไม่มี theta / IV crush / สเปรด · "
+               "ตอบว่า *สัญญาณถูกทางมั้ย* ไม่ได้ตอบว่า *เทรด option ตามนี้แล้วได้เท่านี้*")
 
     trades = ft.load()
     if not trades:
