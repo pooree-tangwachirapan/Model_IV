@@ -42,7 +42,9 @@ jobs:
           pip install streamlit numpy pandas scipy plotly requests yfinance
 
       - name: Resolve open trades
-        run: python run_forward_test.py resolve
+        run: |
+          python run_forward_test.py resolve --system fade
+          python run_forward_test.py resolve --system breakout
 
       - name: Commit ledger
         run: |
@@ -53,8 +55,21 @@ jobs:
             echo "ledger ไม่เปลี่ยน — ไม่ต้อง commit"
           else
             git commit -m "forward test: ปิดไม้จำลอง [skip ci]"
-            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
-            git push origin "HEAD:${GITHUB_REF_NAME}"
+            # ดูคำอธิบายเดียวกันใน armed-alert.yml — `|| true` เดิมทำให้ไม้หายตอน rebase ชน
+            pushed=""
+            for i in 1 2 3; do
+              if git pull --rebase --autostash origin "${GITHUB_REF_NAME}" \
+                 && git push origin "HEAD:${GITHUB_REF_NAME}"; then
+                pushed="yes"; break
+              fi
+              git rebase --abort 2>/dev/null || true
+              echo "push รอบ $i ไม่สำเร็จ — รอแล้วลองใหม่"
+              sleep $((i * 5))
+            done
+            if [ -z "$pushed" ]; then
+              echo "::error::push ledger ไม่สำเร็จหลังลอง 3 รอบ"
+              exit 1
+            fi
           fi
 
       # ส่งรายงานเมื่อ: กดเองพร้อมระบุเดือน หรือ เป็นวันที่ 1 ของเดือน
@@ -76,4 +91,6 @@ jobs:
             exit 0
           fi
           echo "ส่งรายงานเดือน $MONTH"
-          python run_forward_test.py report --month "$MONTH" --email
+          # ส่งแยกใบต่อระบบ — รวมใบเดียวแล้วสถิติสองระบบจะปนกันจนอ่านไม่ได้
+          python run_forward_test.py report --system fade     --month "$MONTH" --email
+          python run_forward_test.py report --system breakout --month "$MONTH" --email

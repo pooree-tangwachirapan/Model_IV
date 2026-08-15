@@ -103,7 +103,12 @@ jobs:
 
             # || true ทุกคำสั่ง — รอบเดียวพังต้องไม่ทำให้ลูปทั้งวันตาย
             python send_report.py --no-cme $FLAGS || echo "!! send_report พังรอบนี้ ข้ามไป"
-            python run_forward_test.py record     || echo "!! record พังรอบนี้ ข้ามไป"
+            # สองระบบเดินคู่กัน คนละ ledger — วันหนึ่งจะมีอย่างมากอันเดียวที่ ARMED
+            # (fade ต้องการราคาในโซน · breakout ต้องการนอกโซน) เรียกทั้งคู่ทุกรอบได้เลย
+            python run_forward_test.py record --system fade \
+              || echo "!! record fade พังรอบนี้ ข้ามไป"
+            python run_forward_test.py record --system breakout \
+              || echo "!! record breakout พังรอบนี้ ข้ามไป"
 
             now=$(date -u +%s)
             [ "$now" -ge "$END" ] && break
@@ -131,6 +136,22 @@ jobs:
             echo "ledger ไม่เปลี่ยน — ไม่ต้อง commit"
           else
             git commit -m "forward test: เปิดไม้จำลอง [skip ci]"
-            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
-            git push origin "HEAD:${GITHUB_REF_NAME}"
+            # เดิมเป็น `git pull --rebase ... || true` แล้ว push ต่อ — `|| true` กลืน conflict
+            # พอ rebase ชนกับอีก workflow ที่เขียนไฟล์เดียวกัน repo ค้างกลางคัน
+            # แล้ว push ไปด้วย HEAD ของ remote → ไม้ที่เพิ่งบันทึกหายเงียบ (เกิดจริง 2026-08-12)
+            # ตอนนี้: rebase ต้องสำเร็จถึงจะ push · ล้มก็ abort แล้วลองใหม่ · ครบ 3 รอบถือว่าล้มจริง
+            pushed=""
+            for i in 1 2 3; do
+              if git pull --rebase --autostash origin "${GITHUB_REF_NAME}" \
+                 && git push origin "HEAD:${GITHUB_REF_NAME}"; then
+                pushed="yes"; break
+              fi
+              git rebase --abort 2>/dev/null || true
+              echo "push รอบ $i ไม่สำเร็จ — รอแล้วลองใหม่"
+              sleep $((i * 5))
+            done
+            if [ -z "$pushed" ]; then
+              echo "::error::push ledger ไม่สำเร็จหลังลอง 3 รอบ"
+              exit 1
+            fi
           fi
