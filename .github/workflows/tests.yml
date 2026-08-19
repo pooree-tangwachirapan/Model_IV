@@ -1,0 +1,32 @@
+name: Tests
+
+# รันชุดทดสอบทุกครั้งที่ push โค้ด — จะได้รู้ทันทีว่าแก้อะไรแล้วพังของเดิม
+# ไม่รันตอน workflow แก้ ledger/log ตัวเอง (commit พวกนั้นมี [skip ci] อยู่แล้ว)
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "forward_test/**"
+      - "**.md"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install streamlit numpy pandas scipy plotly requests yfinance
+
+      - name: Run test suites
+        run: python run_tests.py
