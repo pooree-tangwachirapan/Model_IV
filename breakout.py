@@ -206,7 +206,7 @@ def evaluate(snap: dict) -> dict:
         return out
 
     # ── ประตูแข็ง ──
-    H.append(_g("ตำแหน่งเทียบกำแพง", br is not None,
+    H.append(_g("ราคาทะลุกำแพงแล้ว", br is not None,
                 f"{br['direction']} ทะลุ {br['wall']:,.2f} ไป {br['dist_pct']:.2f}%"
                 if br else f"ยังอยู่ในโซน {pw:,.2f}–{cw:,.2f}",
                 "ระบบนี้เข้าเฉพาะตอนกำแพงแตกแล้ว — อยู่ในโซนคือเกมของ fade ไม่ใช่เกมนี้"))
@@ -216,10 +216,10 @@ def evaluate(snap: dict) -> dict:
         return out
 
     if not em:
-        H.append(_g("ความสดของการทะลุ", False, "ไม่มี Expected Move",
+        H.append(_g("ทะลุสด ไม่ตกรถ", False, "ไม่มี Expected Move",
                     "หน้าต่างไล่ตามวัดเป็น ×EM — ไม่มี EM ก็ตัดสินไม่ได้"))
     else:
-        H.append(_g("ความสดของการทะลุ", br["fresh"],
+        H.append(_g("ทะลุสด ไม่ตกรถ", br["fresh"],
                     f"{br['dist_em']:.2f}×EM ({br['dist_pct']:.2f}%) จากกำแพง",
                     f"ต้องอยู่ระหว่าง {BREACH_MIN_EM:.2f}–{BREACH_MAX_EM:.2f}×EM · "
                     + ("ต่ำกว่านี้ = ยังแค่แหย่ อาจเด้งกลับ"
@@ -227,10 +227,9 @@ def evaluate(snap: dict) -> dict:
                        f"เกินนี้เรขาคณิตให้ไม่ถึง {MIN_PLAN_R:g}R แล้ว — ตกรถ ไม่ต้องไล่")))
 
     # regime: −GEX หนุน breakout · +GEX แรงกดจะสวนเรา
-    H.append(_g("Net GEX", net <= 0, _fmt_usd(net),
-                "ระบบ breakout ต้องการ **ลบ** · ลบ = dealer short gamma ไล่ตามราคา "
-                "ขยายการเคลื่อนไหว หนุนการทะลุ · บวก = dealer สวนราคา ดูดกลับเข้าโซน "
-                "ทำให้การทะลุเป็นของปลอม"))
+    H.append(_g("Net GEX ไม่เป็นบวก", net <= 0, _fmt_usd(net),
+                "ลบ = dealer short gamma ไล่ตามราคา ขยายการเคลื่อนไหว (หนุนการทะลุ) · "
+                "บวก = dealer สวนราคา จะดูดกลับเข้าโซน ทำให้การทะลุเป็นของปลอม"))
 
     if flip is None:
         H.append(_g("ฝั่งของ Gamma Flip", False, "หา flip ไม่เจอ",
@@ -248,7 +247,7 @@ def evaluate(snap: dict) -> dict:
     out["plan"] = plan
     if em:
         room = (plan or {}).get("room_em")
-        H.append(_g("ระยะเหลือถึงเป้า", bool(room and room >= MIN_EM_ROOM),
+        H.append(_g("เหลือระยะให้วิ่ง", bool(room and room >= MIN_EM_ROOM),
                     f"{room:.2f}×EM ถึงเป้า" if room else "คำนวณไม่ได้",
                     f"ต้อง ≥ {MIN_EM_ROOM:g}×EM · น้อยกว่านี้เป้าอยู่ในระยะที่ราคาแกว่งถึงเองอยู่แล้ว"))
     H.append(_g(f"เรขาคณิต ≥ {MIN_PLAN_R:g}R", bool(plan and plan["plan_r"] >= MIN_PLAN_R),
@@ -265,17 +264,17 @@ def evaluate(snap: dict) -> dict:
             except (ValueError, IndexError):
                 pass
     if z0 is not None:
-        Sf.append(_g("0DTE share", z0 <= MAX_0DTE_SHARE, f"{z0:.1f}% ของ |GEX|",
+        Sf.append(_g("0DTE ไม่คุมเกมเกินไป", z0 <= MAX_0DTE_SHARE, f"{z0:.1f}% ของ |GEX|",
                      f"เกิน {MAX_0DTE_SHARE:g}% = กำแพงขยับทุกชั่วโมง ไล่ตามไม่ทัน"))
     if lv.get("call_wall_oi") and lv.get("put_wall_oi"):
         agree = (lv["call_wall_oi"] == cw and lv["put_wall_oi"] == pw)
-        Sf.append(_g("กำแพงสองนิยาม", agree,
+        Sf.append(_g("กำแพงสองนิยามตรงกัน", agree,
                      f"OI ล้วน {lv['put_wall_oi']:,.0f}/{lv['call_wall_oi']:,.0f}",
                      "ไม่ตรงกัน = ไม่แน่ใจว่ากำแพงที่ 'แตก' คือกำแพงจริง"))
     term = snap.get("term") or {}
     if term.get("slope_pct") is not None:
         back = term["slope_pct"] < 0
-        Sf.append(_g("Term structure", back,
+        Sf.append(_g("Term structure backwardation", back,
                      f"{term['state']} ({term['slope_pct']:+.1f}%)",
                      "backwardation = ตลาดกลัวระยะสั้น มักมาคู่กับการเคลื่อนไหวแรง หนุน breakout"))
 
