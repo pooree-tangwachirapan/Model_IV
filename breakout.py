@@ -147,6 +147,15 @@ def build_plan(spot, br, em, max_pain=None, next_level=None) -> dict | None:
         "plan_r": reward_pts / risk_pts,
         "target_src": src,
         "room_em": reward_pts / em,
+        # ── ฟิลด์ให้ schema ตรงกับ gate.build_plan ──
+        # เพื่อให้ตัวเรนเดอร์ (gate.render_text / send_report.build_gate_html) ใช้ตัวเดียวกันได้
+        # ไม่ต้องแยกทางเขียนสองชุด ซึ่งจะเพี้ยนออกจากกันเมื่อแก้ข้างเดียว
+        # ระบบนี้เข้าที่ราคาตลาดทันที → ระยะถึงจุดเข้าเป็น 0 และอยู่ที่ "ขอบ" เสมอ
+        # blown เป็น False เสมอโดยโครงสร้าง: stop อยู่ในกำแพง ส่วน spot อยู่นอกกำแพงแล้ว
+        "dist_to_entry_pts": 0.0,
+        "dist_to_entry_pct": 0.0,
+        "at_edge": True,
+        "blown": False,
     }
 
 
@@ -181,10 +190,19 @@ def evaluate(snap: dict) -> dict:
              (f"call {cw:,.2f}" if cw else "call —"))
     H.append(_g("ข้อมูลกำแพง", br is not None or (pw and cw), walls,
                 "ต้องมีกำแพงทั้งสองฝั่งถึงจะรู้ว่าทะลุอันไหน"))
-    if pw is None or cw is None or (cw and pw and cw <= pw):
+    # แยก "ดึงข้อมูลมาไม่ครบ" ออกจาก "กำแพงทับกันจริง" ให้ตรงกับ gate.zone_problem
+    # ทั้งคู่ห้ามเทรดเหมือนกัน แต่สิ่งที่ต้องทำต่อคนละเรื่อง — อันแรกต้องไปไล่ว่า pipeline พังตรงไหน
+    # อันหลังคือสภาพตลาดที่ถูกต้องแล้ว ถ้าตีเป็น data issue หัวเรื่องเมลจะขึ้น ⚠️ DATA ทั้งที่ข้อมูลปกติ
+    if pw is None or cw is None:
         out["data_issue"] = True
         out["headline"] = "ข้อมูลไม่พอจะตัดสิน"
-        out["reason"] = "หากำแพงไม่ครบ หรือกำแพงกลับหัว"
+        miss = [n for n, v in (("Put Wall", pw), ("Call Wall", cw)) if v is None]
+        out["reason"] = f"หา {' และ '.join(miss)} ไม่เจอ — กระดานว่างหรือดึงข้อมูลมาไม่ครบ"
+        return out
+    if cw <= pw:
+        out["headline"] = "ไม่มีโซนให้อ้างอิง"
+        out["reason"] = (f"Call Wall {cw:,.2f} ไม่ได้อยู่เหนือ Put Wall {pw:,.2f} — "
+                         "ไม่มีขอบเขตให้บอกว่า 'ทะลุ' คืออะไร · นี่คือสภาพตลาดจริง ไม่ใช่ข้อมูลพัง")
         return out
 
     # ── ประตูแข็ง ──

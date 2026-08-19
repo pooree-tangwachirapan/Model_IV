@@ -23,6 +23,7 @@ import traceback
 from datetime import datetime
 from email.message import EmailMessage
 
+import breakout
 import gate
 import snapshot
 from dashboard import STATUS_COLOR, render_text
@@ -31,6 +32,7 @@ BG, CARD, LINE, TXT, DIM = "#0b1220", "#111d33", "#1d2f4f", "#e8f2ff", "#7e93b5"
 
 GATE_COLOR = {"ARMED": "#2ecc71", "WATCH": "#e67e22", "STAND_DOWN": "#e74c3c"}
 GATE_WORD = {"ARMED": "ARMED", "WATCH": "WATCH", "STAND_DOWN": "STAND DOWN"}
+SYSTEM_WORD = {"fade": "FADE · รอที่กำแพง", "breakout": "BREAKOUT · ไล่ตามการทะลุ"}
 
 
 def build_gate_html(gates: list[dict]) -> str:
@@ -89,6 +91,8 @@ def build_gate_html(gates: list[dict]) -> str:
             f'font-size:11px;font-weight:700;letter-spacing:.5px">{word}</span>'
             f'<span style="color:{TXT};font-size:17px;font-weight:700;margin-left:10px">'
             f'{g["symbol"]}</span>'
+            f'<span style="color:{DIM};font-size:11px;margin-left:8px;border:1px solid {LINE};'
+            f'border-radius:3px;padding:1px 6px">{SYSTEM_WORD.get(g.get("system","fade"))}</span>'
             f'<div style="color:{TXT};font-size:14px;font-weight:600;margin-top:8px">'
             f'{g["headline"]}</div>'
             f'<div style="color:{DIM};font-size:11.5px;line-height:1.5;margin-top:3px">'
@@ -104,7 +108,10 @@ def build_gate_html(gates: list[dict]) -> str:
         f'<div style="color:{TXT};font-size:22px;font-weight:700;margin-bottom:4px">'
         f'🎯 วันนี้เข้าได้ไหม</div>'
         f'<div style="color:{DIM};font-size:12px;margin-bottom:14px">'
-        f'ประตูอัตโนมัติจาก gate.py · <b>ARMED = โครงสร้างไม่ได้ห้ามไว้ ไม่ใช่คำสั่งให้เข้า</b></div>'
+        f'สองระบบตรงข้ามกัน — <b>FADE</b> (gate.py) เดิมพันว่ากำแพงถือ · '
+        f'<b>BREAKOUT</b> (breakout.py) เดิมพันว่ากำแพงแตก<br>'
+        f'วันหนึ่งจะมีอย่างมากอันเดียวที่ ARMED · '
+        f'<b>ARMED = โครงสร้างไม่ได้ห้ามไว้ ไม่ใช่คำสั่งให้เข้า</b></div>'
         f'{"".join(cards)}'
         f'<div style="color:{DIM};font-size:11px;line-height:1.6;margin:-4px 0 22px">'
         f'⚠️ เมลนี้ส่งตามเวลา cron — ถ้ารันก่อนตลาดเปิด level ที่เห็นคือ OI ของเมื่อคืน '
@@ -393,15 +400,31 @@ def main() -> int:
             print(f"  CME: ข้ามไป ({type(e).__name__}: {e})", file=sys.stderr)
 
     # ── ประตูก่อนเข้าไม้ — ล้มเหลวได้ ไม่ทำให้ Signal Recap ไม่ถูกส่ง ──
+    # ประเมินทั้งสองระบบทุกสัญลักษณ์ — ทั้งวันจะมีอย่างมากอันเดียวที่ ARMED
+    # (fade ต้องการราคาในโซน · breakout ต้องการนอกโซน) เห็นคู่กันแล้วรู้ทันทีว่าวันนี้เป็นเกมไหน
+    # ระบบหนึ่งพังต้องไม่ลากอีกระบบลงไปด้วย จึง try แยกต่อระบบ
     gates = []
     if not args.no_gate:
         for s in ok:
-            try:
-                gates.append(gate.evaluate(s))
-            except Exception as e:
-                print(f"  gate {s['symbol']}: ข้ามไป ({type(e).__name__}: {e})", file=sys.stderr)
+            for name, ev in (("fade", gate.evaluate), ("breakout", breakout.evaluate)):
+                try:
+                    g = ev(s)
+                    g.setdefault("system", name)
+                    gates.append(g)
+                except Exception as e:
+                    print(f"  {name} {s['symbol']}: ข้ามไป ({type(e).__name__}: {e})",
+                          file=sys.stderr)
         for g in gates:
-            print(f"  gate {g['symbol']}: {g['verdict']} — {g['headline']}")
+            print(f"  {g.get('system','fade'):<9} {g['symbol']}: {g['verdict']} — {g['headline']}")
+        # สองระบบ ARMED พร้อมกันเป็นไปไม่ได้ตามนิยาม — ถ้าเกิดคือบั๊ก ต้องเห็นในล็อก
+        for s in ok:
+            pair = [g for g in gates if g["symbol"] == s["symbol"]]
+            f_ = next((g for g in pair if g.get("system") == "fade"), None)
+            b_ = next((g for g in pair if g.get("system") == "breakout"), None)
+            if f_ and b_:
+                clash = breakout.conflicts_with(f_, b_)
+                if clash:
+                    print(f"  !! {s['symbol']}: {clash}", file=sys.stderr)
 
     # ── สถานะรอบก่อน — ต้องเขียนกลับทุกทางออก ไม่งั้นการตรวจ "เปลี่ยนสถานะ" เพี้ยน ──
     prev_state = {}
@@ -413,7 +436,10 @@ def main() -> int:
             prev_state = {}          # รอบแรก / ไฟล์เสีย = ถือว่าไม่เคยมีสถานะ
     # ปัญหาข้อมูลถือเป็นสถานะแยก ไม่ใช่ STAND_DOWN — ไม่งั้น pipeline พังแล้วเงียบสนิท
     # และเก็บลง state ด้วย เพื่อให้ --only-on-change เตือนครั้งเดียวตอนเริ่มพัง ไม่ใช่ทุก 15 นาที
-    cur_state = {g["symbol"]: ("DATA_ISSUE" if g.get("data_issue") else g["verdict"])
+    # key ต้องมีชื่อระบบด้วย — ไม่งั้นสองระบบของสัญลักษณ์เดียวกันเขียนทับกัน
+    # แล้ว --only-on-change จะเห็นแค่ระบบหลัง ทำให้พลาดตอน breakout เปลี่ยนเป็น ARMED
+    cur_state = {f"{g['symbol']}·{g.get('system', 'fade')}":
+                 ("DATA_ISSUE" if g.get("data_issue") else g["verdict"])
                  for g in gates}
 
     def save_state():
@@ -473,7 +499,10 @@ def main() -> int:
             rank = {"ARMED": 0, "WATCH": 1, "STAND_DOWN": 2}
             top = min(gates, key=lambda g: rank.get(g["verdict"], 9))
             icon = {"ARMED": "🎯", "WATCH": "👀", "STAND_DOWN": "⛔"}[top["verdict"]]
-            lead = f"{icon} {GATE_WORD[top['verdict']]} {top['symbol']} · "
+            # ระบุระบบด้วยเมื่อไม่ใช่ STAND_DOWN — บนล็อกสกรีนต้องรู้ว่าเป็นเกมไหน ไม่ใช่แค่ว่ามีอะไร
+            sys_tag = ("" if top["verdict"] == "STAND_DOWN"
+                       else f" [{top.get('system', 'fade').upper()}]")
+            lead = f"{icon} {GATE_WORD[top['verdict']]}{sys_tag} {top['symbol']} · "
     subject = (f"{tag}{lead}{head['symbol']} ${head['spot']:,.2f} · "
                f"Signal Recap {', '.join(syms)} · {datetime.now():%d %b %H:%M}")
 
