@@ -131,7 +131,10 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add forward_test/ledger.json 2>/dev/null || true
+          # add ทั้งโฟลเดอร์ ไม่ใช่แค่ ledger.json
+          # เดิม add เฉพาะไฟล์เดียว → ledger_breakout.json กับ log/ ถูกสร้างในรันเนอร์แล้วทิ้งทุกรอบ
+          # (breakout ยังไม่เคย ARMED เลยไม่มีใครเห็นว่ามันจะหาย ส่วน log หายแน่นอนตั้งแต่วันแรก)
+          git add forward_test/ 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "ledger ไม่เปลี่ยน — ไม่ต้อง commit"
           else
