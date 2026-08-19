@@ -25,6 +25,7 @@ from email.message import EmailMessage
 
 import breakout
 import gate
+import predictions
 import snapshot
 from dashboard import STATUS_COLOR, render_text
 
@@ -351,6 +352,8 @@ def main() -> int:
                     help="ไม่ต้องแนบส่วน CME/COT")
     ap.add_argument("--no-gate", action="store_true",
                     help="ไม่ต้องแนบบล็อก 'วันนี้เข้าได้ไหม' (gate.py)")
+    ap.add_argument("--no-log", action="store_true",
+                    help="ไม่ต้องบันทึกการตัดสินลง forward_test/log/ (ใช้ตอนทดสอบ)")
     ap.add_argument("--armed-only", action="store_true",
                     help="ส่งเมลเฉพาะตอนมีตัวไหนขึ้น ARMED — ใช้กับ cron ระหว่างวันที่ยิงถี่")
     ap.add_argument("--only-on-change", action="store_true",
@@ -425,6 +428,16 @@ def main() -> int:
                 clash = breakout.conflicts_with(f_, b_)
                 if clash:
                     print(f"  !! {s['symbol']}: {clash}", file=sys.stderr)
+
+        # บันทึกทุกการตัดสิน — ต้องอยู่ตรงนี้ ก่อนด่าน --armed-only/--only-on-change
+        # เพราะวันที่ "ไม่ส่งเมล" คือวันที่ต้องเก็บที่สุด: ถ้าเก็บแค่วันที่ยิง
+        # ก็ไม่มีทางรู้ว่าระบบเลือกมากแค่ไหน หรือประตูไหนเป็นตัวปิด
+        if gates and not args.no_log:
+            try:
+                n = predictions.record_all(gates, ok)
+                print(f"  log: บันทึก {n} record → {predictions.log_path()}")
+            except Exception as e:
+                print(f"  log: เขียนไม่สำเร็จ ({type(e).__name__}: {e})", file=sys.stderr)
 
     # ── สถานะรอบก่อน — ต้องเขียนกลับทุกทางออก ไม่งั้นการตรวจ "เปลี่ยนสถานะ" เพี้ยน ──
     prev_state = {}
