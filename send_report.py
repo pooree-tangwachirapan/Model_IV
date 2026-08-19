@@ -356,6 +356,9 @@ def main() -> int:
                     help="ไม่ต้องบันทึกการตัดสินลง forward_test/log/ (ใช้ตอนทดสอบ)")
     ap.add_argument("--armed-only", action="store_true",
                     help="ส่งเมลเฉพาะตอนมีตัวไหนขึ้น ARMED — ใช้กับ cron ระหว่างวันที่ยิงถี่")
+    ap.add_argument("--log-only", action="store_true",
+                    help="ประเมินและบันทึก log อย่างเดียว ไม่ส่งเมลไม่ว่าสถานะไหน — "
+                         "ใช้กับชั่วโมงแรกที่ต้องการข้อมูลแต่ยังไม่ควรเข้าไม้")
     ap.add_argument("--only-on-change", action="store_true",
                     help="ส่งเฉพาะตอน verdict ต่างจากรอบก่อน (ต้องมี --state-file) "
                          "— กันเมลซ้ำตอน ARMED ค้างอยู่หลายรอบ")
@@ -438,6 +441,14 @@ def main() -> int:
                 print(f"  log: บันทึก {n} record → {predictions.log_path()}")
             except Exception as e:
                 print(f"  log: เขียนไม่สำเร็จ ({type(e).__name__}: {e})", file=sys.stderr)
+
+    # ── โหมดสังเกตอย่างเดียว ──
+    # ออกตรงนี้ หลังบันทึก log แล้ว แต่ก่อนแตะ state
+    # จงใจไม่เขียน state: ถ้าเขียน พอถึงเวลาที่เทรดได้จริง --only-on-change จะเห็นว่า
+    # "ไม่เปลี่ยน" แล้วเงียบ ทั้งที่นั่นคือนาทีแรกที่ควรเตือน
+    if args.log_only:
+        print("--log-only: บันทึกอย่างเดียว ไม่ส่งเมล ไม่แตะ state")
+        return 0
 
     # ── สถานะรอบก่อน — ต้องเขียนกลับทุกทางออก ไม่งั้นการตรวจ "เปลี่ยนสถานะ" เพี้ยน ──
     prev_state = {}

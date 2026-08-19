@@ -8,6 +8,13 @@ name: Armed Alert (intraday)
 #   = GitHub ไม่ได้แค่ดีเลย์ มันทิ้งรอบทิ้ง ยิงจริงราวชั่วโมงละครั้งไม่ว่าจะตั้งถี่แค่ไหน
 #   → ให้ cron ยิงครั้งเดียวพอ แล้ว "งาน" นั้นนอนรอเองทุก 15 นาที ซึ่งควบคุมได้จริง
 #
+# วันหนึ่งแบ่งเป็นสองช่วง:
+#   09:28–10:18 ET  สังเกตอย่างเดียว — ประเมินและบันทึก log ทุก 15 นาที แต่ไม่ส่งเมล ไม่เปิดไม้
+#                   เพราะชั่วโมงแรกเป็นช่วง gamma whipsaw ที่ไม่ควรเข้าอยู่แล้ว
+#                   แต่เป็นช่วงที่ราคาขยับแรงที่สุด — ไม่เก็บไว้ก็ตอบทีหลังไม่ได้ว่าเกิดอะไรขึ้น
+#                   (เคสจริง 2026-08-19: ราคาไหล 721→712 ตอน 09:45 แล้วเราไม่มีข้อมูลช่วงนั้นเลย)
+#   10:18–14:35 ET  ทำงานเต็ม — ส่งเมลตอนเข้าเกณฑ์ และบันทึก forward test
+#
 # cron 3 ตัวเป็นตัวสำรองซ้อนกัน เผื่อตัวแรกโดนทิ้ง — ตัวที่มาทีหลังเห็นว่าหน้าต่างปิดแล้วก็ออกเอง
 # concurrency ตั้ง cancel-in-progress: false เพื่อไม่ให้ตัวสำรองไปฆ่างานที่กำลังวิ่งอยู่
 #
@@ -16,9 +23,9 @@ name: Armed Alert (intraday)
 
 on:
   schedule:
-    - cron: "18 14 * * 1-5"    # ตั้งใจให้เริ่ม 10:18 ET
-    - cron: "18 15 * * 1-5"    # สำรอง เผื่อรอบแรกโดนทิ้ง
-    - cron: "18 16 * * 1-5"    # สำรองอีกชั้น
+    - cron: "28 13 * * 1-5"    # 09:28 ET — ก่อนระฆังเปิด 2 นาที
+    - cron: "28 14 * * 1-5"    # สำรอง เผื่อรอบแรกโดนทิ้ง
+    - cron: "28 15 * * 1-5"    # สำรองอีกชั้น
   workflow_dispatch:
     inputs:
       symbols:
@@ -28,7 +35,7 @@ on:
       minutes:
         description: "วนกี่นาที (ทดสอบ — ใส่ 1 เพื่อเช็ครอบเดียวแล้วจบ)"
         required: false
-        default: "240"
+        default: "330"
       always_send:
         description: "ส่งแม้ไม่ ARMED และแม้สถานะไม่เปลี่ยน (ไว้ทดสอบ)"
         type: boolean
@@ -44,7 +51,7 @@ permissions:
 jobs:
   alert:
     runs-on: ubuntu-latest
-    timeout-minutes: 330       # หน้าต่าง 4 ชม. + หัวท้าย
+    timeout-minutes: 350       # 09:28–14:35 ET = 5 ชม. 7 นาที + หัวท้าย (เพดาน job = 6 ชม.)
     steps:
       - uses: actions/checkout@v4
 
@@ -75,10 +82,13 @@ jobs:
           SYMBOLS:   ${{ inputs.symbols || 'QQQ' }}
           GATE_STATE_FILE: .gate-state.json
           FLAGS: ${{ inputs.always_send == true && ' ' || '--armed-only --only-on-change' }}
-          RUN_MINUTES: ${{ inputs.minutes || '240' }}
+          RUN_MINUTES: ${{ inputs.minutes || '330' }}
+          # กดเองพร้อม always_send = ข้ามช่วงสังเกต ให้ทำงานเต็มตั้งแต่รอบแรก
+          TRADE_FROM_HHMM: ${{ inputs.always_send == true && '00:00' || '14:18' }}
         run: |
           set -u
           WINDOW_END=$(date -u -d "18:35" +%s)          # ปิดหน้าต่าง 14:35 ET
+          TRADE_FROM=$(date -u -d "$TRADE_FROM_HHMM" +%s)  # ก่อนเวลานี้ = สังเกตอย่างเดียว
           HARD_STOP=$(( $(date -u +%s) + RUN_MINUTES * 60 ))
           END=$(( WINDOW_END < HARD_STOP ? WINDOW_END : HARD_STOP ))
 
