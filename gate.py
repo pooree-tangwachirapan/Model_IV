@@ -202,27 +202,29 @@ def evaluate(snap: dict) -> dict:
     # แม้แต่ตอน STAND_DOWN เพื่อให้ย้อนวัดผลได้ว่าถ้าเข้าตามแผนจะเป็นยังไง
     out["plan"] = build_plan(S, z, pw, cw, em, snap.get("max_pain"))
 
-    H.append(_g("ราคาอยู่ในโซน", z["inside"], f"{z['pct']*100:.0f}% ของโซน",
-                "อยู่นอกกำแพง = แรง hedge ไม่ดูดกลับแล้ว · กำแพงที่แตกเปลี่ยนหน้าที่จาก support เป็นตัวเร่ง"))
+    H.append(_g("ตำแหน่งในโซน", z["inside"], f"{z['pct']*100:.0f}% ของโซน",
+                "ต้องอยู่ระหว่างกำแพง (0–100%) · อยู่นอกกำแพง = แรง hedge ไม่ดูดกลับแล้ว "
+                "กำแพงที่แตกเปลี่ยนหน้าที่จาก support เป็นตัวเร่ง"))
 
     # โซนแคบกว่าระยะที่ราคาเดินได้เอง = ไม่มีอะไรให้ fade ต่อให้รูปร่างถูกทุกอย่าง
     if em:
         zone_em = z["span"] / em
         z["zone_em"] = zone_em
-        H.append(_g("โซนกว้างพอ", zone_em >= MIN_ZONE_EM,
+        H.append(_g("ความกว้างโซน", zone_em >= MIN_ZONE_EM,
                     f"{z['span']:,.2f} จุด = {zone_em:.2f}×EM (EM 1σ ±{em:,.2f})",
                     f"ต้อง ≥ {MIN_ZONE_EM:g}×EM · แคบกว่านี้ราคาคาดว่าจะกวาดทั้งโซนได้ในวันเดียว "
                     f"กำแพงทั้งสองฝั่งโดนทดสอบ สมมติฐาน 'ถูกดูดกลับ' อ่อนลง "
                     f"และเข้าที่ขอบก็ไม่ต่างจากเข้ากลาง"))
-    H.append(_g("Net GEX เป็นบวก", net > 0, _fmt_usd(net),
-                "บวก = dealer long gamma ซื้อ dip ขาย rip · ลบ = ไล่ตามราคา ห้าม fade"))
+    H.append(_g("Net GEX", net > 0, _fmt_usd(net),
+                "ระบบ fade ต้องการ **บวก** · บวก = dealer long gamma ซื้อ dip ขาย rip ราคาถูกตรึง · "
+                "ลบ = dealer ไล่ตามราคา ขยายแรง ห้าม fade"))
 
     if flip is None:
-        H.append(_g("ห่าง Gamma Flip", False, "หา flip ไม่เจอ",
+        H.append(_g("ระยะถึง Gamma Flip", False, "หา flip ไม่เจอ",
                     f"ไม่มี zero-crossing ใน ±12% รอบ spot ({lv.get('flip_method') or '—'}) — ไม่รู้ว่าอยู่ฝั่งไหนของ regime"))
     else:
         ok_flip = (not z["flip_near"]) and not (net < 0 and z["below_flip"])
-        H.append(_g("ห่าง Gamma Flip", ok_flip,
+        H.append(_g("ระยะถึง Gamma Flip", ok_flip,
                     f"{flip:,.2f} (ห่าง {z['flip_pct']:.2f}% / {z['flip_frac']*100:.0f}% ของโซน)",
                     f"ต้องห่าง ≥ {FLIP_MIN_PCT}% ของ spot และ ≥ {FLIP_FRAC*100:.0f}% ของความกว้างโซน — "
                     "ที่ flip พอดีคือ regime กำลังพลิก ไม่ใช่ที่ที่จะรับ"))
