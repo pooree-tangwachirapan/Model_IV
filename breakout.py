@@ -278,6 +278,16 @@ def evaluate(snap: dict) -> dict:
                      f"{term['state']} ({term['slope_pct']:+.1f}%)",
                      "backwardation = ตลาดกลัวระยะสั้น มักมาคู่กับการเคลื่อนไหวแรง หนุน breakout"))
 
+    # สองสูตรของ Net GEX — ดูหมายเหตุใน fa_gex.find_levels()
+    # ไม่ตรงกัน = ราคาอยู่ในช่วงที่ "จุดศูนย์" ของสองวิธีคร่อมกันอยู่ = regime ยังไม่ชัด
+    # ไม่ปิดประตู แต่ต้องเห็น เพราะเป็นเวลาที่ตัวเลข GEX บนหน้าจอเชื่อได้น้อยที่สุด
+    if lv.get("net_agree") is not None:
+        Sf.append(_g("เครื่องหมาย GEX สองสูตร", lv["net_agree"],
+                     f"CBOE γ {_fmt_usd(net)} · เส้น BS {_fmt_usd(lv['net_profile'])}",
+                     "flip หามาจากเส้น BS แต่ net ที่รายงานใช้ gamma ของ CBOE — "
+                     "คนละสูตรจึงมีจุดศูนย์คนละที่ · ไม่ตรงกัน = อยู่ในช่วงคาบเกี่ยว "
+                     "อย่าเชื่อเครื่องหมาย GEX ตอนนี้ ให้ดูระยะถึง flip แทน"))
+
     # ── ตัดสิน ──
     failed = [r["label"] for r in H if not r["ok"]]
     if failed:

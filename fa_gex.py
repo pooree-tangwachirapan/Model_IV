@@ -223,7 +223,9 @@ def find_levels(ps: pd.DataFrame, S: float, df_contracts: pd.DataFrame | None = 
     ไม่ส่งมา → fallback เป็น cumulative-sum ข้าม strike (อ่อนกว่า มักได้ N/A)
     """
     out = {"net": 0.0, "flip": None, "call_wall": None, "put_wall": None, "flip_method": None,
-           "call_wall_oi": None, "put_wall_oi": None, "call_oi": None, "put_oi": None}
+           "call_wall_oi": None, "put_wall_oi": None, "call_oi": None, "put_oi": None,
+           # net อีกนิยาม — อ่านจากเส้นเดียวกับที่ใช้หา flip · ดูหมายเหตุท้ายฟังก์ชัน
+           "net_profile": None, "net_agree": None}
     if ps.empty:
         return out
     out["net"] = float(ps["net_gex"].sum())
@@ -265,6 +267,29 @@ def find_levels(ps: pd.DataFrame, S: float, df_contracts: pd.DataFrame | None = 
         flip = _zero_cross(ps["strike"].to_numpy(), cum, S)
         if flip is not None:
             out["flip"], out["flip_method"] = flip, "cumulative-sum"
+
+    # ── net อีกนิยาม: อ่านค่าจากเส้น profile ตรงตำแหน่ง spot ──
+    #
+    # ทำไมต้องมีสองค่า:
+    #   out["net"]         = Σ(gamma ที่ CBOE ส่งมา) — greeks จากโมเดลของ CBOE เอง
+    #                        (มี dividend / American exercise / rf ของเขา)
+    #   out["net_profile"] = ค่าบนเส้นที่เราคำนวณ gamma ด้วย Black-Scholes เอง
+    #                        ซึ่งเป็น "เส้นเดียวกับที่ใช้หา flip"
+    #
+    # ผลคือ flip กับ net ไม่ได้มาจากเส้นเดียวกัน → "spot เหนือ flip ต้อง net บวก"
+    # จึงไม่จริงเสมอไป เคสจริง 2026-08-19 09:38 ET: QQQ spot 721.52 อยู่เหนือ flip 718.60
+    # ถึง 2.92 จุด แต่ net (CBOE γ) ยังเป็น -0.68Bn
+    #
+    # ไม่เลือกทิ้งอันใดอันหนึ่ง เพราะ gamma ของ CBOE คือค่าจากผู้ให้บริการจริง
+    # ส่วนเส้น BS คือสิ่งเดียวที่ reprice ที่ spot สมมติได้ (จำเป็นต่อการหา flip)
+    # → เก็บทั้งคู่ แล้วรายงานเมื่อเครื่องหมายไม่ตรงกัน ซึ่งแปลว่าอยู่ในโซนที่ regime ยังไม่ชัด
+    prof_pair = out.get("profile")
+    if prof_pair:
+        ladder, prof = prof_pair
+        if ladder is not None and len(ladder):
+            i = int(np.argmin(np.abs(np.asarray(ladder) - S)))
+            out["net_profile"] = float(prof[i])
+            out["net_agree"] = bool(out["net"] * out["net_profile"] > 0)
     return out
 
 

@@ -374,6 +374,15 @@ def build_snapshot(sym: str = "QQQ", hv_ticker: str | None = None,
                       else "positive GEX — dealer สวนราคา กดให้นิ่ง")
                      + " · ⚠️ เครื่องหมายขึ้นกับ convention อย่าใช้เดี่ยว ๆ"))
 
+    # สองสูตรของ Net GEX ไม่ตรงกัน = อยู่ในช่วงคาบเกี่ยวที่เครื่องหมายเชื่อไม่ได้
+    if lv.get("net_agree") is False:
+        rows.append(_row("⚠️ GEX สองสูตรขัดกัน",
+                         f"{fa_gex.fmt_usd(lv['net'])} vs {fa_gex.fmt_usd(lv['net_profile'])}",
+                         "WATCH",
+                         "ซ้าย = gamma ที่ CBOE ให้ · ขวา = เส้น BS ที่ใช้หา flip · "
+                         "คนละสูตรมีจุดศูนย์คนละที่ ตอนนี้ราคาอยู่ระหว่างสองจุดนั้นพอดี "
+                         "— เครื่องหมาย GEX ยังบอกอะไรไม่ได้ ให้ดูระยะถึง flip แทน"))
+
     if lv["call_wall"] and lv["put_wall"]:
         dc = abs(lv["call_wall"] - S) / S * 100
         dp = abs(S - lv["put_wall"]) / S * 100

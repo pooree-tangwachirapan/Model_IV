@@ -67,6 +67,9 @@ def to_record(g: dict, snap: dict, when: datetime | None = None) -> dict:
             "pw": lv.get("put_wall"), "cw": lv.get("call_wall"),
             "pw_oi": lv.get("put_wall_oi"), "cw_oi": lv.get("call_wall_oi"),
             "flip": lv.get("flip"), "net": lv.get("net"),
+            # net อีกสูตร + ธงว่าเครื่องหมายตรงกันไหม — ต้องเก็บ ไม่งั้นย้อนดูไม่ได้ว่า
+            # วันไหนอยู่ในช่วงคาบเกี่ยวที่ตัวเลข GEX เชื่อไม่ได้
+            "net_prof": lv.get("net_profile"), "net_agree": lv.get("net_agree"),
             "em": em, "mp": (snap or {}).get("max_pain"),
             "iv": (snap or {}).get("atm_iv"),
         },
