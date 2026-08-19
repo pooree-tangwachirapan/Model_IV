@@ -13,6 +13,9 @@ on:
         required: false
         default: "QQQ"
 
+permissions:
+  contents: write          # ต้องเขียน forward_test/log/ กลับเข้ารีโป
+
 jobs:
   report:
     runs-on: ubuntu-latest
@@ -43,3 +46,33 @@ jobs:
           MAIL_TO:   ${{ secrets.MAIL_TO }}
           SYMBOLS:   ${{ inputs.symbols || 'QQQ' }}
         run: python send_report.py
+
+      # send_report เขียน forward_test/log/ ทุกครั้งที่ประเมิน — ถ้าไม่ commit
+      # มันจะถูกสร้างในรันเนอร์แล้วหายไปพร้อม job (พลาดมาแล้วกับ ledger_breakout)
+      - name: Commit prediction log
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add forward_test/ 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "log ไม่เปลี่ยน — ไม่ต้อง commit"
+          else
+            git commit -m "log: บันทึกการตัดสินรายวัน [skip ci]"
+            # rebase ต้องสำเร็จถึงจะ push · ล้มก็ abort แล้วลองใหม่
+            # (`|| true` แบบเดิมกลืน conflict แล้ว push ทับด้วย HEAD ของ remote = ข้อมูลหาย)
+            pushed=""
+            for i in 1 2 3; do
+              if git pull --rebase --autostash origin "${GITHUB_REF_NAME}" \
+                 && git push origin "HEAD:${GITHUB_REF_NAME}"; then
+                pushed="yes"; break
+              fi
+              git rebase --abort 2>/dev/null || true
+              echo "push รอบ $i ไม่สำเร็จ — รอแล้วลองใหม่"
+              sleep $((i * 5))
+            done
+            if [ -z "$pushed" ]; then
+              echo "::error::push log ไม่สำเร็จหลังลอง 3 รอบ"
+              exit 1
+            fi
+          fi
