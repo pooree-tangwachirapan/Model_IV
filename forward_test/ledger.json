@@ -34,14 +34,14 @@
   "qty": 100,
   "risk_usd": 93.0,
   "spot_at_signal": 733.08,
-  "status": "open",
+  "status": "no_fill",
   "filled_at": null,
   "fill_price": null,
-  "closed_date": null,
-  "closed_at": null,
+  "closed_date": "2026-08-20",
+  "closed_at": "2026-08-20T15:05:00+00:00",
   "exit": null,
   "realized_r": null,
   "pnl_usd": null,
-  "note": ""
+  "note": "ราคาไม่เคยแตะ entry 735.00 จนหมดเวลา"
  }
 ]
