@@ -141,30 +141,38 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # add ทั้งโฟลเดอร์ ไม่ใช่แค่ ledger.json
-          # เดิม add เฉพาะไฟล์เดียว → ledger_breakout.json กับ log/ ถูกสร้างในรันเนอร์แล้วทิ้งทุกรอบ
-          # (breakout ยังไม่เคย ARMED เลยไม่มีใครเห็นว่ามันจะหาย ส่วน log หายแน่นอนตั้งแต่วันแรก)
           git add forward_test/ 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "ledger ไม่เปลี่ยน — ไม่ต้อง commit"
-          else
-            git commit -m "forward test: เปิดไม้จำลอง [skip ci]"
-            # เดิมเป็น `git pull --rebase ... || true` แล้ว push ต่อ — `|| true` กลืน conflict
-            # พอ rebase ชนกับอีก workflow ที่เขียนไฟล์เดียวกัน repo ค้างกลางคัน
-            # แล้ว push ไปด้วย HEAD ของ remote → ไม้ที่เพิ่งบันทึกหายเงียบ (เกิดจริง 2026-08-12)
-            # ตอนนี้: rebase ต้องสำเร็จถึงจะ push · ล้มก็ abort แล้วลองใหม่ · ครบ 3 รอบถือว่าล้มจริง
-            pushed=""
-            for i in 1 2 3; do
-              if git pull --rebase --autostash origin "${GITHUB_REF_NAME}" \
-                 && git push origin "HEAD:${GITHUB_REF_NAME}"; then
-                pushed="yes"; break
-              fi
-              git rebase --abort 2>/dev/null || true
-              echo "push รอบ $i ไม่สำเร็จ — รอแล้วลองใหม่"
-              sleep $((i * 5))
-            done
-            if [ -z "$pushed" ]; then
-              echo "::error::push ledger ไม่สำเร็จหลังลอง 3 รอบ"
-              exit 1
+            echo "ข้อมูลไม่เปลี่ยน — ไม่ต้อง commit"
+            exit 0
+          fi
+
+          # ── รวมระดับข้อมูล ไม่ใช่ระดับข้อความ ──
+          # เดิม commit แล้ว `git pull --rebase` + retry 3 รอบ · พังจริงที่ run #33:
+          #   CONFLICT (content): Merge conflict in forward_test/log/2026-08.jsonl
+          # retry ไม่ช่วยเลยเพราะไม่ใช่ race — เนื้อไฟล์ชนกันจริง ลองใหม่ก็ชนเหมือนเดิมทั้ง 3 รอบ
+          # ไฟล์พวกนี้เป็นชุด record ที่มี key (trade id / ts+sym+sys) รวมได้แบบไม่มีทางขัดกัน
+          STASH=$(mktemp -d)
+          python merge_data.py --save "$STASH"
+
+          pushed=""
+          for i in 1 2 3; do
+            git fetch origin "${GITHUB_REF_NAME}" || { sleep $((i * 5)); continue; }
+            git reset --hard "origin/${GITHUB_REF_NAME}"   # ปลอดภัย: ข้อมูลอยู่ใน $STASH แล้ว
+            python merge_data.py --merge "$STASH"
+            git add forward_test/ 2>/dev/null || true
+            if git diff --cached --quiet; then
+              echo "หลังรวมแล้วไม่มีอะไรใหม่ (อีกงานบันทึกไปแล้ว) — ไม่ต้อง push"
+              pushed="yes"; break
             fi
+            git commit -m "forward test: เปิดไม้จำลอง [skip ci]"
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then pushed="yes"; break; fi
+            echo "push รอบ $i ไม่สำเร็จ — ดึงของใหม่แล้วรวมอีกครั้ง"
+            sleep $((i * 5))
+          done
+
+          rm -rf "$STASH"
+          if [ -z "$pushed" ]; then
+            echo "::error::push ข้อมูล forward test ไม่สำเร็จหลังลอง 3 รอบ"
+            exit 1
           fi
