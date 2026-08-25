@@ -9,6 +9,9 @@ snapshot.py — คำนวณ metric ทั้งชุดสำหรับ D
 หน่วย GEX/DEX/VEX เป็น convention ของเราเอง — เทียบข้ามเจ้าไม่ได้ ดู ratio ไม่ใช่เลขดิบ
 """
 
+import sys
+import time
+
 import numpy as np
 import pandas as pd
 import requests
@@ -26,10 +29,40 @@ RF = 0.05
 # ════════════════════════════════════════════════
 # แหล่งข้อมูล
 # ════════════════════════════════════════════════
-def fetch_chain(sym: str):
-    """คืน (raw DataFrame, spot) จาก CBOE"""
-    d = requests.get(f"{CBOE}/{sym}.json", headers=HDRS, timeout=20).json()["data"]
-    return pd.DataFrame(d.get("options", [])), float(d.get("current_price", 0))
+def fetch_chain(sym: str, tries: int = 4):
+    """
+    คืน (raw DataFrame, spot) จาก CBOE
+
+    ต้อง retry เพราะเป็น HTTP ครั้งเดียวไปยัง CDN ฟรี ยิงตามเวลา cron —
+    พลาดรอบเดียวแล้ว build_snapshot คืน error ทำให้ ok ว่าง แล้ว send_report
+    return 1 ตั้งแต่ก่อนถึงขั้นตอนส่งเมล = ไม่มีเมลออกและไม่มี log ให้ดูว่าเพราะอะไร
+
+    เกิดจริง 24-25 ส.ค. 2026 รอบ 13:4x UTC (ราวเวลาเปิดตลาดที่กระดานกำลังถูกสร้างใหม่)
+    ล้มสองวันติด แต่กดมือทีหลังในวันเดียวกันผ่านปกติ — คือของชั่วคราวล้วน ๆ
+
+    "ได้ข้อมูลมาไม่ครบ" นับเป็นล้มเหลวด้วย ไม่ใช่แค่ HTTP error — เพราะ CBOE
+    ตอบ 200 พร้อม options ว่างหรือ current_price = 0 ได้ ซึ่งเดิมถูกส่งต่อไปเงียบ ๆ
+    """
+    last = None
+    for i in range(tries):
+        try:
+            r = requests.get(f"{CBOE}/{sym}.json", headers=HDRS, timeout=20)
+            r.raise_for_status()
+            d = r.json()["data"]
+            df = pd.DataFrame(d.get("options", []))
+            S = float(d.get("current_price", 0) or 0)
+            if not df.empty and S > 0:
+                return df, S
+            last = f"ตอบ 200 แต่ข้อมูลไม่ครบ (สัญญา {len(df)} · spot {S})"
+        except Exception as e:
+            last = f"{type(e).__name__}: {e}"
+        if i < tries - 1:
+            wait = 2 ** i * 2                      # 2 · 4 · 8 วินาที
+            print(f"  ดึง chain {sym} รอบ {i+1} ไม่สำเร็จ ({last}) — รอ {wait}s แล้วลองใหม่",
+                  file=sys.stderr, flush=True)
+            time.sleep(wait)
+    # โยน error พร้อมเหตุผล ดีกว่าคืนของว่างให้ปลายทางไปตายแบบไม่มีข้อความ
+    raise RuntimeError(f"ดึง chain {sym} ไม่สำเร็จหลังลอง {tries} รอบ — ล่าสุด: {last}")
 
 
 def get_macro() -> dict:

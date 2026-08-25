@@ -381,16 +381,25 @@ def main() -> int:
     snaps, failed = [], []
     for s in syms:
         try:
-            snaps.append(snapshot.build_snapshot(s))
-            print(f"  {s}: OK")
+            snap = snapshot.build_snapshot(s)
         except Exception as e:
             traceback.print_exc()
+            snap = {"symbol": s, "error": f"{type(e).__name__}: {e}"}
+        snaps.append(snap)
+        # เดิมพิมพ์ "OK" ทุกครั้งที่ไม่มี exception — แต่ build_snapshot คืน error dict
+        # ได้โดยไม่ throw (เช่นดึง chain ไม่ได้ / ไม่มี OI-gamma) log เลยบอกว่า OK ทั้งที่ล้ม
+        # และข้อความจริงหายไปหมด · เกิดจริง 24-25 ส.ค. 2026: เมลไม่ออกสองวัน
+        # โดยที่ log ทั้งหมดมีแค่ "QQQ: OK" กับ "คำนวณไม่สำเร็จสักตัว"
+        if snap.get("error"):
             failed.append(s)
-            snaps.append({"symbol": s, "error": f"{type(e).__name__}: {e}"})
+            print(f"  {s}: ล้มเหลว — {snap['error']}", file=sys.stderr, flush=True)
+        else:
+            print(f"  {s}: OK", flush=True)
 
     ok = [s for s in snaps if not s.get("error")]
     if not ok:
-        print("คำนวณไม่สำเร็จสักตัว — ไม่ส่งเมล", file=sys.stderr)
+        why = " · ".join(f"{x.get('symbol')}: {x.get('error')}" for x in snaps)
+        print(f"คำนวณไม่สำเร็จสักตัว — ไม่ส่งเมล · {why}", file=sys.stderr, flush=True)
         return 1
 
     # ── CME/Macro (COT + rates + futures) — ล้มเหลวได้ ไม่ทำให้เมลไม่ถูกส่ง ──
