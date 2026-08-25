@@ -57,9 +57,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 358       # เริ่มได้เร็วสุด 12:50 ถึง 18:35 UTC = 5 ชม. 45 นาที (เพดาน job = 6 ชม.)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -70,7 +70,7 @@ jobs:
           pip install streamlit numpy pandas scipy plotly requests yfinance
 
       - name: Restore gate state
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .gate-state.json
           key: gate-state-${{ github.run_id }}
@@ -146,7 +146,7 @@ jobs:
 
       - name: Save gate state
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .gate-state.json
           key: gate-state-${{ github.run_id }}
