@@ -23,9 +23,13 @@ name: Armed Alert (intraday)
 
 on:
   schedule:
-    - cron: "28 13 * * 1-5"    # 09:28 ET — ก่อนระฆังเปิด 2 นาที
-    - cron: "28 14 * * 1-5"    # สำรอง เผื่อรอบแรกโดนทิ้ง
-    - cron: "28 15 * * 1-5"    # สำรองอีกชั้น
+    # ตั้งไว้ 12:50 ทั้งที่อยากเริ่ม 13:28 — เพราะ GitHub ดีเลย์ตารางนี้ 35–41 นาทีทุกวัน
+    # (20 ส.ค. 36 · 21 ส.ค. 35 · 24 ส.ค. 40 · 25 ส.ค. 41) ตั้งตรงเวลาแล้วได้ 14:0x ทุกครั้ง
+    # ซึ่งกินช่วงสังเกตหมด · ตั้งเผื่อ 38 นาทีแล้วมันจะมาลงราว ๆ ระฆังเปิดพอดี
+    # ถ้าวันไหน GitHub เร็วผิดปกติ ลูปมีตัวกันไม่ให้เริ่มก่อน OBSERVE_FROM อยู่แล้ว
+    - cron: "50 12 * * 1-5"
+    - cron: "50 13 * * 1-5"    # สำรอง เผื่อรอบแรกโดนทิ้ง
+    - cron: "50 14 * * 1-5"    # สำรองอีกชั้น
   workflow_dispatch:
     inputs:
       symbols:
@@ -35,7 +39,7 @@ on:
       minutes:
         description: "วนกี่นาที (ทดสอบ — ใส่ 1 เพื่อเช็ครอบเดียวแล้วจบ)"
         required: false
-        default: "330"
+        default: "350"
       always_send:
         description: "ส่งแม้ไม่ ARMED และแม้สถานะไม่เปลี่ยน (ไว้ทดสอบ)"
         type: boolean
@@ -51,7 +55,7 @@ permissions:
 jobs:
   alert:
     runs-on: ubuntu-latest
-    timeout-minutes: 350       # 09:28–14:35 ET = 5 ชม. 7 นาที + หัวท้าย (เพดาน job = 6 ชม.)
+    timeout-minutes: 358       # เริ่มได้เร็วสุด 12:50 ถึง 18:35 UTC = 5 ชม. 45 นาที (เพดาน job = 6 ชม.)
     steps:
       - uses: actions/checkout@v4
 
@@ -82,19 +86,30 @@ jobs:
           SYMBOLS:   ${{ inputs.symbols || 'QQQ' }}
           GATE_STATE_FILE: .gate-state.json
           FLAGS: ${{ inputs.always_send == true && ' ' || '--armed-only --only-on-change' }}
-          RUN_MINUTES: ${{ inputs.minutes || '330' }}
+          RUN_MINUTES: ${{ inputs.minutes || '350' }}
           # กดเองพร้อม always_send = ข้ามช่วงสังเกต ให้ทำงานเต็มตั้งแต่รอบแรก
           TRADE_FROM_HHMM: ${{ inputs.always_send == true && '00:00' || '14:18' }}
+          # ห้ามเริ่มประเมินก่อนเวลานี้ — กันกรณี cron มาตรงเวลาแล้วเผารันเนอร์ทิ้งก่อนตลาดเปิด
+          OBSERVE_FROM_HHMM: ${{ inputs.always_send == true && '00:00' || '13:28' }}
         run: |
           set -u
           WINDOW_END=$(date -u -d "18:35" +%s)          # ปิดหน้าต่าง 14:35 ET
           TRADE_FROM=$(date -u -d "$TRADE_FROM_HHMM" +%s)  # ก่อนเวลานี้ = สังเกตอย่างเดียว
+          OBSERVE_FROM=$(date -u -d "$OBSERVE_FROM_HHMM" +%s)
           HARD_STOP=$(( $(date -u +%s) + RUN_MINUTES * 60 ))
           END=$(( WINDOW_END < HARD_STOP ? WINDOW_END : HARD_STOP ))
 
           if [ "$(date -u +%s)" -ge "$END" ]; then
             echo "หน้าต่างปิดไปแล้ว (ตอนนี้ $(date -u +%H:%M) UTC) — ออกเลย ไม่ต้องทำอะไร"
             exit 0
+          fi
+
+          # cron ตั้งเผื่อดีเลย์ไว้ ถ้าวันไหนมาตรงเวลาจริงก็นอนรอถึงเวลาที่ตั้งใจ
+          # เช็ค END ด้วย ไม่งั้นตอนทดสอบ minutes=1 จะนอนข้ามเวลาจบไปเลย
+          now=$(date -u +%s)
+          if [ "$now" -lt "$OBSERVE_FROM" ] && [ "$OBSERVE_FROM" -lt "$END" ]; then
+            echo "มาก่อนเวลา — นอนรอถึง $OBSERVE_FROM_HHMM UTC อีก $(( (OBSERVE_FROM - now) / 60 )) นาที"
+            sleep $(( OBSERVE_FROM - now ))
           fi
 
           # นอนจนถึงนาทีที่ 7/22/37/52 ถัดไป — ให้จังหวะเช็คตรงขอบ 15 นาทีจริง ๆ

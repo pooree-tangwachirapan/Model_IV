@@ -45,7 +45,20 @@ jobs:
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           MAIL_TO:   ${{ secrets.MAIL_TO }}
           SYMBOLS:   ${{ inputs.symbols || 'QQQ' }}
-        run: python send_report.py
+        run: |
+          # เก็บ output แล้วโยนบรรทัดที่เป็น error ออกเป็น ::error:: ด้วย
+          # ไม่งั้นเวลาพัง annotation บอกแค่ 'exit code 1' ซึ่งอ่านสาเหตุไม่ได้
+          # ถ้าไม่มีสิทธิ์เปิด log (เกิดจริง 24-25 ส.ค.: เมลไม่ออกสองวันโดยไม่รู้สาเหตุ)
+          set -o pipefail
+          if python send_report.py 2>&1 | tee /tmp/send.log; then
+            exit 0
+          fi
+          # ยิงบรรทัดท้าย ๆ ออกเป็น annotation ทีละบรรทัด — ไม่ต้อง match ข้อความ
+          # (send() มีข้อความ error หลายแบบ จับด้วย pattern เดียวพลาดแน่)
+          grep -av "^$" /tmp/send.log | tail -6 | while IFS= read -r L; do
+            echo "::error::$L"
+          done
+          exit 1
 
       # send_report เขียน forward_test/log/ ทุกครั้งที่ประเมิน — ถ้าไม่ commit
       # มันจะถูกสร้างในรันเนอร์แล้วหายไปพร้อม job (พลาดมาแล้วกับ ledger_breakout)
