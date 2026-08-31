@@ -38,6 +38,7 @@ dashboard   = _load_local("dashboard")
 cme_tab     = _load_local("cme_tab")
 cockpit_tab = _load_local("cockpit_tab")
 pnl_tab     = _load_local("pnl_tab")
+long_tab    = _load_local("long_tab")   # [LP] แท็บ Long Premium — ดูบล็อกอธิบายตรง st.tabs()
 
 # ── Page config ──────────────────────────────
 st.set_page_config(
@@ -595,9 +596,21 @@ if "S" not in st.session_state:
     st.stop()
 
 # ── Tabs: Dashboard / Cockpit / IV Surface (เดิม) / GEX / CME / เทียบข้อมูล ──
-tab_dash, tab_ck, tab_pnl, tab_iv, tab_gex, tab_cme, tab_cmp = st.tabs(
-    ["📋 Dashboard", "🎯 Cockpit", "📊 P&L", "📈 IV Surface", "🧲 GEX",
-     "🏛️ CME / Macro", "⚖️ เทียบข้อมูล"])
+# ╔═══════════════════════════════════════════════════════════════════════╗
+# ║ [LP] LONG-PREMIUM TAB — เพิ่มเข้ามา 31 ส.ค. 2026                        ║
+# ║ แท็บ "🎯 Long Premium" (tab_lp) เป็นของใหม่ทั้งหมด                      ║
+# ║ ถ้าเจอบั๊กที่ไม่เคยเกิดก่อนมีแท็บนี้ → ลบ tab_lp ออกจาก 3 จุดนี้ก่อนเลย:  ║
+# ║   1) บรรทัด `long_tab = _load_local("long_tab")` ด้านบนของไฟล์          ║
+# ║   2) ชื่อแท็บใน st.tabs() ข้างล่างนี้ + ตัวแปร tab_lp                    ║
+# ║   3) บล็อก `with tab_lp:` ข้างล่าง                                     ║
+# ║ ไฟล์ที่เกี่ยวข้อง (ลบทิ้งได้ทั้งหมด ไม่มีใครเรียกใช้):                     ║
+# ║   long_tab.py · contracts.py · intraday.py · lp_store.py               ║
+# ║   tests/test_long_premium.py · โฟลเดอร์ long_premium/                  ║
+# ║ ระบบเดิม (fade/breakout/email/workflow) ไม่พึ่งอะไรในนี้เลย              ║
+# ╚═══════════════════════════════════════════════════════════════════════╝
+tab_dash, tab_ck, tab_pnl, tab_lp, tab_iv, tab_gex, tab_cme, tab_cmp = st.tabs(   # [LP] +tab_lp
+    ["📋 Dashboard", "🎯 Cockpit", "📊 P&L", "🎯 Long Premium", "📈 IV Surface",   # [LP] +ชื่อแท็บ
+     "🧲 GEX", "🏛️ CME / Macro", "⚖️ เทียบข้อมูล"])
 
 with tab_dash:
     dashboard.render_dashboard_tab(sym=sym, name=name)
@@ -607,6 +620,9 @@ with tab_ck:
 
 with tab_pnl:
     pnl_tab.render_pnl_tab()
+
+with tab_lp:                                                                      # [LP] บล็อกใหม่ทั้งบล็อก
+    long_tab.render_long_tab(sym=sym, name=name)
 
 with tab_cme:
     cme_tab.render_cme_tab()
