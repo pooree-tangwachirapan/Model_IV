@@ -136,6 +136,26 @@ sk = sn.skew_25d(df10, raw10, target_dte=30)
 check("RR25 = put25 - call25 = 30-20 = +10",
       sk["rr25"] is not None and abs(sk["rr25"] - 10.0) < 0.5, f"ได้ {sk['rr25']}")
 
+print("\n=== 12. สัญญาของ error snapshot — ตัวที่ทำ Cockpit พังทั้งแอป ===")
+# บั๊กจริง 31 ส.ค. 2026: cockpit_tab.py อ่าน snap['asof'] ก่อนเช็ค error
+# → KeyError → Streamlit หยุดทั้ง script → ทุกแท็บที่อยู่หลังแท็บนั้นไม่ถูก render เลย
+# เทสต์นี้ตรึงสัญญาไว้: error snapshot **มีแค่ error กับ symbol** ห้ามมีใครไปสมมติว่ามี field อื่น
+_real_fetch = sn.fetch_chain
+try:
+    sn.fetch_chain = lambda s, tries=4: (pd.DataFrame(), 0.0)      # จำลอง CBOE ตอบ chain ว่าง
+    err = sn.build_snapshot("QQQ")
+finally:
+    sn.fetch_chain = _real_fetch
+
+check("chain ว่าง -> คืน dict ที่มี error", bool(err.get("error")), f"ได้ {err}")
+check("error snapshot ไม่มี key 'asof' (ผู้ใช้ต้องเช็ค error ก่อนเสมอ)", "asof" not in err,
+      f"key ที่มี: {sorted(err)}")
+check("error snapshot ไม่มี key 'spot' / 'rows' / 'levels' ด้วย",
+      not any(k in err for k in ("spot", "rows", "levels")), f"key ที่มี: {sorted(err)}")
+check("ยังบอกได้ว่าเป็น symbol ไหน", err.get("symbol") == "QQQ")
+# วิธีอ่านที่ปลอดภัย (แบบที่ cockpit_tab.py / long_tab.py ใช้อยู่ตอนนี้)
+check(".get('asof') คืน None แทนที่จะ throw", err.get("asof") is None)
+
 print("\n" + "="*70)
 print(f"สรุป: {'ผ่านหมด' if not FAIL else str(len(FAIL))+' รายการไม่ผ่าน'}")
 for f in FAIL: print(f"  - {f}")

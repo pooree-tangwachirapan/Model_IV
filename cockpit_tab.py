@@ -53,8 +53,24 @@ def render_cockpit_tab(sym: str, name: str):
     # ── snapshot: ใช้ของ Dashboard ถ้ามีอยู่แล้ว จะได้ไม่ยิง CBOE ซ้ำ ──
     c1, c2 = st.columns([3, 1])
     reuse = st.session_state.get("dash_snap") if st.session_state.get("dash_snap_sym") == sym else None
-    c1.caption(f"ใช้ snapshot จากแท็บ Dashboard ({reuse['asof']:%H:%M})" if reuse
-               else "ยังไม่มี snapshot ของ symbol นี้ — กดคำนวณ")
+
+    # build_snapshot() ตอนล้มเหลวคืน {"error": ..., "symbol": sym} — **ไม่มี key "asof"**
+    # (snapshot.py บรรทัด 349 กับ 353) จึงต้องเช็ค error ก่อนแตะ field อื่นเสมอ
+    #
+    # ของเดิมอ่าน reuse['asof'] ตรงนี้เลย → KeyError ซึ่งใน Streamlit ทำให้ script หยุดทั้งไฟล์
+    # ผลคือ **ทุกแท็บที่อยู่หลังแท็บนี้ไม่ถูก render เลยสักแท็บ** ไม่ใช่แค่แท็บนี้พัง
+    # เกิดจริงตอนเปิดตลาด: CBOE CDN ตอบ 200 พร้อม chain ว่างได้ (HANDOFF §6.8)
+    # แล้ว @st.cache_data(ttl=300) ที่ iv_surface_real.py แช่ผลว่างนั้นไว้อีก 5 นาที
+    #
+    # ไม่คำนวณใหม่อัตโนมัติเมื่อเจอ error snapshot — ปล่อยให้ตกไปที่ st.error ข้างล่าง
+    # เพราะการยิงซ้ำทุกรอบ rerun ใส่ endpoint ที่กำลังล้มเหลวอยู่ ไม่ได้ช่วยอะไร
+    asof = reuse.get("asof") if reuse else None
+    if reuse and reuse.get("error"):
+        c1.caption(f"snapshot ล่าสุดของ **{sym}** ล้มเหลว — กด **คำนวณใหม่** เพื่อลองอีกครั้ง")
+    elif asof:
+        c1.caption(f"ใช้ snapshot จากแท็บ Dashboard ({asof:%H:%M})")
+    else:
+        c1.caption("ยังไม่มี snapshot ของ symbol นี้ — กดคำนวณ")
     if c2.button("🔄 คำนวณใหม่", key="ck_go", width="stretch") or reuse is None:
         with st.spinner(f"กำลังคำนวณ {sym} ..."):
             try:
