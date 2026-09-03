@@ -43,5 +43,29 @@
   "realized_r": null,
   "pnl_usd": null,
   "note": "ราคาไม่เคยแตะ entry 735.00 จนหมดเวลา"
+ },
+ {
+  "id": "QQQ-20260903-170709",
+  "system": "fade",
+  "symbol": "QQQ",
+  "date": "2026-09-03",
+  "opened": "2026-09-03T17:07:09+00:00",
+  "side": "SHORT",
+  "entry": 720.0,
+  "invalidation": 721.09,
+  "target": 709.0,
+  "plan_r": 10.060295,
+  "qty": 100,
+  "risk_usd": 109.0,
+  "spot_at_signal": 717.48,
+  "status": "open",
+  "filled_at": null,
+  "fill_price": null,
+  "closed_date": null,
+  "closed_at": null,
+  "exit": null,
+  "realized_r": null,
+  "pnl_usd": null,
+  "note": ""
  }
 ]
