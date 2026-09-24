@@ -40,6 +40,13 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Restore mail state
+        uses: actions/cache/restore@v6
+        with:
+          path: .mail-sent.json
+          key: mail-sent-${{ github.run_id }}
+          restore-keys: mail-sent-
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -50,21 +57,13 @@ jobs:
           python run_forward_test.py resolve --system fade
           python run_forward_test.py resolve --system breakout
 
-      # รวบ CSV 0DTE ของเดือนที่จบแล้วเป็นคลัง .csv.gz (ดูเหตุผลใน zero_dte.py)
-      # ไม่ทำแบบนี้ repo จะโตปีละ ~200 MB · rollup ข้ามเดือนปัจจุบันให้เอง
-      - name: Roll up finished months of 0DTE data
-        run: |
-          python zero_dte_cli.py rollup || echo "!! รวบ 0DTE ไม่สำเร็จ — ข้ามไป ข้อมูลยังอยู่ครบ"
-
+      # `if: always()` เพราะขั้นตอนก่อนหน้าอาจพังจากเน็ต — ถ้าไม่ใส่
+      # ผลการปิดไม้ของระบบที่ resolve สำเร็จไปแล้วจะหายไปด้วยแบบเงียบ ๆ
       - name: Commit ledger
+        if: always()
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add forward_test/ 2>/dev/null || true
-          if git diff --cached --quiet; then
-            echo "ข้อมูลไม่เปลี่ยน — ไม่ต้อง commit"
-            exit 0
-          fi
 
           # ── รวมระดับข้อมูล ไม่ใช่ระดับข้อความ ──
           # เดิม commit แล้ว `git pull --rebase` + retry 3 รอบ · พังจริงที่ run #33:
@@ -79,7 +78,20 @@ jobs:
             git fetch origin "${GITHUB_REF_NAME}" || { sleep $((i * 5)); continue; }
             git reset --hard "origin/${GITHUB_REF_NAME}"   # ปลอดภัย: ข้อมูลอยู่ใน $STASH แล้ว
             python merge_data.py --merge "$STASH"
-            git add forward_test/ 2>/dev/null || true
+
+            # รวบ CSV 0DTE ของเดือนที่จบแล้วเป็นคลัง .csv.gz (เหตุผลใน zero_dte.py)
+            # **ต้องทำตรงนี้ หลัง reset --hard** ไม่ใช่เป็น step แยกก่อนหน้า:
+            # reset เอาไฟล์รายวันทั้งหมดกลับมาจาก remote ถ้า rollup ทำไปก่อน
+            # การลบไฟล์รายวันจะถูกย้อนคืน เหลือแต่ .csv.gz ที่ซ้ำกับของเดิม
+            # (บั๊กนี้ทำให้ rollup ไม่เคยได้ผลจริงบน CI เลยสักครั้ง)
+            python zero_dte_cli.py rollup \
+              || echo "!! รวบ 0DTE ไม่สำเร็จ — ข้ามไป ข้อมูลยังอยู่ครบ"
+
+            # add ทีละโฟลเดอร์ — `git add a/ b/` ถ้า b/ ไม่มี git ล้มทั้งคำสั่ง
+            # โดยไม่ stage a/ ด้วย แล้วเรามองไม่เห็นเพราะกลืน error ไว้
+            for d in forward_test zero_dte; do
+              [ -d "$d" ] && git add -A -- "$d"
+            done
             if git diff --cached --quiet; then
               echo "หลังรวมแล้วไม่มีอะไรใหม่ (อีกงานบันทึกไปแล้ว) — ไม่ต้อง push"
               pushed="yes"; break
@@ -95,8 +107,9 @@ jobs:
             echo "::error::push ข้อมูล forward test ไม่สำเร็จหลังลอง 3 รอบ"
             exit 1
           fi
-      # ส่งรายงานเมื่อ: กดเองพร้อมระบุเดือน หรือ เป็นวันที่ 1 ของเดือน
+      # ส่งรายงานเมื่อ: กดเองพร้อมระบุเดือน หรือ วันนี้เป็น**วันทำการแรกของเดือน**
       - name: Monthly report
+        if: always()
         env:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
@@ -105,15 +118,36 @@ jobs:
           MAIL_TO:   ${{ secrets.MAIL_TO }}
           PICKED:    ${{ inputs.month }}
         run: |
+          # ของเดิมเช็ค `date -u +%d = "01"` ซึ่ง **พังเพราะดีเลย์ของ GitHub**:
+          # cron ตั้ง 21:31 UTC ของวันที่ 1 · ดีเลย์เฉลี่ยที่วัดได้ 262 นาที
+          # → เวลาจริงข้ามเที่ยงคืนเป็นวันที่ 2 → ตอบ "02" → ข้ามเงียบ
+          # รายงานรายเดือนจึงแทบไม่เคยออกเลย (บั๊กคลาสเดียวกับ §6.9)
+          # และถ้าวันไหน GitHub ตรงเวลา cron ทั้ง 3 ชั้นก็ผ่านหมด → ส่ง 6 ใบ
+          #
+          # ตอนนี้ถามปฏิทินแทนนาฬิกา: "วันนี้เป็นวันทำการแรกของเดือนไหม"
+          # ซึ่งจริงวันเดียวต่อเดือนไม่ว่างานจะเริ่มตอนไหน และข้ามวันหยุด/เสาร์อาทิตย์ให้เอง
+          # ส่วนการส่งซ้ำกันด้วย mail_state.py เหมือนเมลรายวัน
           MONTH="$PICKED"
-          if [ -z "$MONTH" ] && [ "$(date -u +%d)" = "01" ]; then
-            MONTH=$(date -u -d "yesterday" +%Y-%m)     # เดือนที่เพิ่งจบ
+          if [ -z "$MONTH" ]; then
+            MONTH=$(python market_clock.py report-month || true)
           fi
           if [ -z "$MONTH" ]; then
-            echo "ยังไม่ถึงรอบรายงาน (ไม่ใช่วันที่ 1 และไม่ได้ระบุเดือน) — ข้าม"
+            echo "ยังไม่ถึงรอบรายงาน (ไม่ใช่วันทำการแรกของเดือน) — ข้าม"
+            exit 0
+          fi
+          if ! python mail_state.py check "monthly-$MONTH" >/dev/null; then
+            echo "รายงานเดือน $MONTH ส่งไปแล้ว — ข้าม"
             exit 0
           fi
           echo "ส่งรายงานเดือน $MONTH"
           # ส่งแยกใบต่อระบบ — รวมใบเดียวแล้วสถิติสองระบบจะปนกันจนอ่านไม่ได้
           python run_forward_test.py report --system fade     --month "$MONTH" --email
           python run_forward_test.py report --system breakout --month "$MONTH" --email
+          python mail_state.py mark "monthly-$MONTH" || echo "!! บันทึกสถานะไม่สำเร็จ"
+
+      - name: Save mail state
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: .mail-sent.json
+          key: mail-sent-${{ github.run_id }}

@@ -239,7 +239,12 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add forward_test/ zero_dte/ 2>/dev/null || true
+          # add ทีละโฟลเดอร์ — `git add a/ b/` ถ้า b/ ไม่มีอยู่ git จะล้มทั้งคำสั่ง
+          # **โดยไม่ stage a/ ด้วย** แล้ว `|| true` กลืน error → job เขียว ข้อมูลหาย
+          # (รูปแบบเดียวกับที่เคยทำ ledger_breakout หายมาแล้ว — §6.4)
+          for d in forward_test zero_dte; do
+            [ -d "$d" ] && git add -A -- "$d"
+          done
           if git diff --cached --quiet; then
             echo "ข้อมูลไม่เปลี่ยน — ไม่ต้อง commit"
             exit 0
@@ -258,7 +263,9 @@ jobs:
             git fetch origin "${GITHUB_REF_NAME}" || { sleep $((i * 5)); continue; }
             git reset --hard "origin/${GITHUB_REF_NAME}"   # ปลอดภัย: ข้อมูลอยู่ใน $STASH แล้ว
             python merge_data.py --merge "$STASH"
-            git add forward_test/ zero_dte/ 2>/dev/null || true
+            for d in forward_test zero_dte; do
+              [ -d "$d" ] && git add -A -- "$d"
+            done
             if git diff --cached --quiet; then
               echo "หลังรวมแล้วไม่มีอะไรใหม่ (อีกงานบันทึกไปแล้ว) — ไม่ต้อง push"
               pushed="yes"; break

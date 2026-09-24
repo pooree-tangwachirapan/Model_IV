@@ -59,8 +59,10 @@ on:
         required: false
         default: ""
 
-# กันเมลซ้ำเมื่อบันไดหลายชั้นมาพร้อมกัน — ชั้นที่วิ่งอยู่ทำงานจนจบ
-# ชั้นที่มาทีหลังรอคิว แล้วพอได้วิ่งก็จะเห็นว่าเลยเวลาเป้าไปแล้วจึงออกเอง
+# ให้ชั้นเดียววิ่งทีละครั้ง — **แต่อันนี้ไม่ได้กันเมลซ้ำ**
+# `cancel-in-progress: false` แค่ "ต่อคิว" ชั้นที่รอจะเริ่มทันทีที่ชั้นก่อนจบ
+# แล้วเห็นว่าเวลาเป้าเพิ่งผ่านไป ~5 นาที (ยังอยู่ใน LATE_GRACE) → ส่งซ้ำ
+# ตัวที่กันซ้ำจริงคือ mail_state.py ที่จำว่า slot ไหนของวันไหนส่งไปแล้ว
 concurrency:
   group: daily-report-${{ github.ref }}
   cancel-in-progress: false
@@ -81,6 +83,15 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      # จำว่าวันนี้ส่ง slot ไหนไปแล้ว — กันชั้น cron ที่รอคิวอยู่ส่งซ้ำ
+      # รูปแบบเดียวกับ .gate-state.json ของ armed-alert ที่ใช้ได้ผลอยู่แล้ว
+      - name: Restore mail state
+        uses: actions/cache/restore@v6
+        with:
+          path: .mail-sent.json
+          key: mail-sent-${{ github.run_id }}
+          restore-keys: mail-sent-
 
       # ── ด่านแรก: วันนี้ตลาดเปิดไหม ──────────────────────────────
       # เช็คก่อน pip install เพื่อไม่เผารันเนอร์ในวันหยุด (market_clock ใช้แต่ stdlib)
@@ -121,6 +132,13 @@ jobs:
           for pair in "premarket:$PRE" "open30:$OP30"; do
             name=${pair%%:*}; t=${pair##*:}
             case ",$WANT," in *",$name,"*) ;; *) continue ;; esac
+
+            # ส่งไปแล้ววันนี้ = ไม่ต้องส่งอีก ไม่ว่าเวลาจะยังอยู่ใน grace หรือไม่
+            # (เคสจริง: ชั้นที่รอคิวเริ่มวิ่งทันทีที่ชั้นก่อนหน้าส่งเสร็จ)
+            if ! python mail_state.py check "$name" >/dev/null; then
+              echo "$name: ส่งไปแล้ววันนี้ — ข้าม"
+              continue
+            fi
 
             if [ "$NOW_MODE" = "true" ]; then plan="$plan $name:now"; continue; fi
 
@@ -193,11 +211,17 @@ jobs:
             set -o pipefail
             if python send_report.py --label "$label" 2>&1 | tee /tmp/send-$name.log; then
               echo "✔ รอบ $name ส่งแล้ว"
+              # บันทึกทันทีที่ส่งสำเร็จ ก่อนทำอย่างอื่น — ถ้า job ตายหลังจากนี้
+              # ชั้นถัดไปต้องรู้ว่าใบนี้ออกไปแล้ว ไม่ใช่ส่งซ้ำ
+              python mail_state.py mark "$name" || echo "!! บันทึกสถานะไม่สำเร็จ"
             else
               rc=1
               # ยิงบรรทัดท้าย ๆ ออกเป็น annotation ทีละบรรทัด — ไม่ต้อง match ข้อความ
               # (send() มีข้อความ error หลายแบบ จับด้วย pattern เดียวพลาดแน่)
-              grep -av "^$" /tmp/send-$name.log | tail -6 | while IFS= read -r L; do
+              # `|| true` จำเป็น: ถ้า log ว่างเปล่า grep คืน 1 แล้ว pipefail+errexit
+              # จะฆ่า step ทั้งอัน — โค้ดที่เขียนไว้ "รายงาน error" กลับทำให้ slot ที่สอง
+              # กับการบันทึก 0DTE ไม่ได้ทำงาน
+              { grep -av "^$" /tmp/send-$name.log | tail -6 || true; } | while IFS= read -r L; do
                 echo "::error::[$name] $L"
               done
             fi
@@ -210,6 +234,13 @@ jobs:
           done
           exit $rc
 
+      - name: Save mail state
+        if: always() && steps.plan.outputs.plan != ''
+        uses: actions/cache/save@v6
+        with:
+          path: .mail-sent.json
+          key: mail-sent-${{ github.run_id }}
+
       # send_report เขียน forward_test/log/ ทุกครั้งที่ประเมิน — ถ้าไม่ commit
       # มันจะถูกสร้างในรันเนอร์แล้วหายไปพร้อม job (พลาดมาแล้วกับ ledger_breakout)
       - name: Commit prediction log
@@ -217,7 +248,13 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add forward_test/ zero_dte/ 2>/dev/null || true
+          # ต้อง add ทีละโฟลเดอร์ — `git add a/ b/` ถ้า b/ ไม่มีอยู่ git จะล้มทั้งคำสั่ง
+          # **โดยไม่ stage a/ ด้วย** แล้ว `|| true` ก็กลืน error ไป
+          # → `git diff --cached --quiet` บอก "ไม่มีอะไรเปลี่ยน" → job เขียว ข้อมูลหาย
+          # (รูปแบบเดียวกับที่เคยทำ ledger_breakout หายมาแล้ว — HANDOFF §6.4)
+          for d in forward_test zero_dte; do
+            [ -d "$d" ] && git add -A -- "$d"
+          done
           if git diff --cached --quiet; then
             echo "ข้อมูลไม่เปลี่ยน — ไม่ต้อง commit"
             exit 0
@@ -236,7 +273,9 @@ jobs:
             git fetch origin "${GITHUB_REF_NAME}" || { sleep $((i * 5)); continue; }
             git reset --hard "origin/${GITHUB_REF_NAME}"   # ปลอดภัย: ข้อมูลอยู่ใน $STASH แล้ว
             python merge_data.py --merge "$STASH"
-            git add forward_test/ zero_dte/ 2>/dev/null || true
+            for d in forward_test zero_dte; do
+              [ -d "$d" ] && git add -A -- "$d"
+            done
             if git diff --cached --quiet; then
               echo "หลังรวมแล้วไม่มีอะไรใหม่ (อีกงานบันทึกไปแล้ว) — ไม่ต้อง push"
               pushed="yes"; break

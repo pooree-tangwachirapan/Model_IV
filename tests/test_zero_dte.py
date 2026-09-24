@@ -195,6 +195,52 @@ try:
           z.day_summary("QQQ", "2026-09-25")["snapshots"] == 3,
           str(z.day_summary("QQQ", "2026-09-25")["snapshots"]))
 
+    print("\n=== บันทึกนอกเวลาตลาด ต้องไม่ไปปนไฟล์ของวันถัดไป ===")
+    # บั๊กจริง: ของเดิมตั้งชื่อไฟล์ตาม expiry · ตอน 17:00 ET กระดานเหลือ expiry พรุ่งนี้
+    # แถวนั้นจึงไปลงไฟล์ของพรุ่งนี้ แล้ว vol_delta ของพรุ่งนี้ติดลบ/ถูก clip เป็น 0
+    # และ day_summary รายงานปริมาณของเมื่อวาน = ข้อมูลทั้งวันเสียแบบเงียบ
+    EVE = datetime(2026, 9, 24, 21, 0, tzinfo=timezone.utc)       # 17:00 ET ของวันที่ 24
+    eve = z.build_rows(fake_chain(expiries=("260925",)), 740.0, ts=EVE,
+                       today=date(2026, 9, 24))
+    check("เย็นวันที่ 24 กระดานเหลือ expiry 25 → dte = 1", set(eve["dte"]) == {1},
+          str(set(eve["dte"])))
+    r = z.write_rows(eve)
+    check("แต่ไฟล์ต้องเป็นของวันที่ 24 (วันที่บันทึกจริง) ไม่ใช่ 25",
+          os.path.basename(r["path"]) == "2026-09-24.csv", r["path"])
+    check("ไฟล์ของวันที่ 25 ไม่ถูกแตะ",
+          z.day_summary("QQQ", "2026-09-25")["snapshots"] == 3,
+          str(z.day_summary("QQQ", "2026-09-25")["snapshots"]))
+
+    print("\n=== header: ไฟล์รายวันว่างเปล่าแต่คลังมีข้อมูล ===")
+    # บั๊กจริง: fresh ตัดสินจาก load() ซึ่งรวมคลังด้วย → ไฟล์ 0 ไบต์ได้ fresh=False
+    # → ต่อท้ายโดยไม่มีหัวตาราง → อ่านกลับมาแถวแรกกลายเป็นชื่อคอลัมน์ ไฟล์พังถาวร
+    open(z.path_for("QQQ", "2026-09-25"), "w", encoding="utf-8").close()   # 0 ไบต์
+    rows4 = z.build_rows(fake_chain(), 743.0, ts=TS + timedelta(minutes=60), today=TODAY)
+    z.write_rows(rows4)
+    back = z.load("QQQ", "2026-09-25")
+    check("ยังอ่านคอลัมน์ได้ถูกต้อง ไม่เอาแถวข้อมูลมาเป็น header",
+          "ts_utc" in back.columns and str(back["sym"].iloc[0]) == "QQQ",
+          f"คอลัมน์: {list(back.columns)[:4]}")
+    check("ได้ครบ 4 snapshot (3 ในคลัง + 1 ใหม่)",
+          z.day_summary("QQQ", "2026-09-25")["snapshots"] == 4,
+          str(z.day_summary("QQQ", "2026-09-25")["snapshots"]))
+
+    print("\n=== rollup ต้องไม่ลบไฟล์ที่อ่านไม่ออก ===")
+    # บั๊กจริง: verify เทียบกับ big ซึ่งไม่นับไฟล์พังอยู่แล้ว จึงขึ้น verified=True
+    # แล้ววนลบทุกไฟล์ที่เจอ รวมไฟล์ที่ไม่เคยถูกรวมเข้าคลัง = ข้อมูลหายถาวร
+    bad_day = "2026-09-29"
+    with open(z.path_for("QQQ", bad_day), "w", encoding="utf-8") as fh:
+        fh.write("นี่ไม่ใช่ CSV ที่ถูกต้อง\n\"เปิดแล้วไม่ปิด,,,\n")
+    good = z.build_rows(fake_chain(), 744.0, ts=datetime(2026, 9, 30, 13, 35,
+                        tzinfo=timezone.utc), today=date(2026, 9, 30))
+    z.write_rows(good)
+    r = z.rollup_month("QQQ", "2026-09")
+    check("ไฟล์ที่อ่านไม่ออกยังอยู่ ไม่ถูกลบ", os.path.exists(z.path_for("QQQ", bad_day)),
+          str(r))
+    check("รายงานว่าข้ามวันไหนไปบ้าง", bad_day in r.get("skipped", []), str(r.get("skipped")))
+    check("วันที่ดีถูกรวมเข้าคลังและลบไฟล์รายวันแล้ว",
+          not os.path.exists(z.path_for("QQQ", "2026-09-30")))
+
     print("\n=== record() ต้องไม่โยน exception เมื่อดึง chain ไม่ได้ ===")
     def boom(sym): raise RuntimeError("CBOE ล่ม")
     out = z.record("QQQ", fetch=boom)

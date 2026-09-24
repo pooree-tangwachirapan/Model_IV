@@ -97,6 +97,28 @@ p = mc.session_progress(datetime(2026, 9, 26, 15, 0, tzinfo=timezone.utc))
 check("วันเสาร์ = closed และไม่มีเวลาเปิด/ปิด",
       p["phase"] == "closed" and p["open_utc"] is None and not p["trading"])
 
+print("\n=== รอบรายงานรายเดือน (แทนการเช็ค date -u +%d = 01) ===")
+# ของเดิมเช็ค "วันนี้เป็นวันที่ 1 ตาม UTC ไหม" ซึ่งพังเพราะดีเลย์พางานข้ามเที่ยงคืน
+# → รายงานรายเดือนแทบไม่เคยออก · ตอนนี้ถามปฏิทินว่า "วันทำการแรกของเดือนไหม"
+check("1 ต.ค. 2026 (พฤ · วันทำการแรก) → สรุปเดือน 2026-09",
+      mc.month_to_report(date(2026, 10, 1)) == "2026-09",
+      str(mc.month_to_report(date(2026, 10, 1))))
+check("2 ต.ค. 2026 ไม่ใช่รอบรายงาน", mc.month_to_report(date(2026, 10, 2)) is None)
+# 1 พ.ย. 2026 ตรงวันอาทิตย์ → วันทำการแรกคือจันทร์ที่ 2
+check("1 พ.ย. 2026 ตรงอาทิตย์ → ไม่ใช่รอบ", mc.month_to_report(date(2026, 11, 1)) is None)
+check("2 พ.ย. 2026 (จ) คือวันทำการแรก → สรุป 2026-10",
+      mc.month_to_report(date(2026, 11, 2)) == "2026-10")
+# 1 ม.ค. 2027 เป็นวันหยุด · 2-3 เสาร์อาทิตย์ → วันทำการแรกคือจันทร์ที่ 4
+check("1 ม.ค. 2027 เป็นวันหยุด → ไม่ใช่รอบ", mc.month_to_report(date(2027, 1, 1)) is None)
+check("4 ม.ค. 2027 คือวันทำการแรก → สรุป 2026-12",
+      mc.month_to_report(date(2027, 1, 4)) == "2026-12")
+# ต้องมีเดือนละวันเดียวเป๊ะ ไม่ว่าเดือนไหน
+import calendar
+for y, m in ((2026, 12), (2027, 3), (2027, 7), (2028, 1)):
+    hits = [d for d in range(1, calendar.monthrange(y, m)[1] + 1)
+            if mc.month_to_report(date(y, m, d))]
+    check(f"{y}-{m:02d} มีวันรายงานวันเดียวเป๊ะ", len(hits) == 1, f"ได้ {hits}")
+
 print("\n=== CLI ที่ workflow เรียก ===")
 import subprocess
 env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
@@ -116,6 +138,21 @@ check("CLI epoch คืนตัวเลขที่ตรงกับ slot_utc
 r = run("epoch", "--slot", "premarket", "--date", "2026-12-25")
 check("CLI epoch วันหยุด → exit 1 (workflow ใช้เป็นสัญญาณข้ามวัน)",
       r.returncode == 1, f"exit {r.returncode}")
+
+# เดิม `info --date <วันหยุด>` พังด้วย TypeError เพราะเอา trading ของ "วันนี้"
+# ไปคู่กับ slot ของวันที่ส่งมา (คนละวัน) แล้ว format None
+r = run("info", "--date", "2026-12-25")
+check("CLI info วันหยุด ไม่ crash", r.returncode == 0 and "Traceback" not in r.stderr,
+      f"exit {r.returncode} · {r.stderr[:120]}")
+r = run("info", "--date", "2026-11-27")
+check("CLI info วันครึ่งวัน บอกว่าปิด 18:00 UTC",
+      "18:00" in r.stdout and "ครึ่งวัน" in r.stdout, r.stdout[:200])
+r = run("report-month", "--date", "2026-10-01")
+check("CLI report-month วันทำการแรก → เดือนก่อน + exit 0",
+      r.returncode == 0 and r.stdout.strip() == "2026-09", f"{r.returncode} {r.stdout!r}")
+r = run("report-month", "--date", "2026-10-02")
+check("CLI report-month วันอื่น → ว่าง + exit 1",
+      r.returncode == 1 and not r.stdout.strip(), f"{r.returncode} {r.stdout!r}")
 
 print(f"\nสรุป: {'ผ่านหมด' if not FAIL else f'ไม่ผ่าน {len(FAIL)} เคส'}")
 raise SystemExit(1 if FAIL else 0)

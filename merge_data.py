@@ -60,6 +60,13 @@ def _zdte_files() -> list[str]:
     """CSV 0DTE ทุกวัน/ทุกคลัง — ไล่ดูเองจาก cwd ไม่ใช้ z.ZDTE_DIR ซึ่งเป็น path สัมบูรณ์"""
     out: list[str] = []
     if not os.path.isdir(ZDTE_DIR):
+        # `zero_dte.py` หาโฟลเดอร์จากที่อยู่ของไฟล์ .py แต่ไฟล์นี้อิง cwd
+        # ปกติตรงกันเพราะ workflow รันจากรากรีโป — ถ้าไม่ตรงต้องดังไว้ก่อน
+        # ไม่งั้น --save จะเก็บ 0 ไฟล์อย่างเงียบ ๆ แล้วข้อมูลหายตอน reset --hard
+        import zero_dte as _z
+        if os.path.isdir(_z.ZDTE_DIR) and os.listdir(_z.ZDTE_DIR):
+            print(f"  !! มีข้อมูล 0DTE ที่ {_z.ZDTE_DIR} แต่ cwd คือ {os.getcwd()} "
+                  "— รันจากรากรีโปเท่านั้น ไม่งั้นข้อมูลจะไม่ถูกเก็บ", file=sys.stderr)
         return out
     for sym in sorted(os.listdir(ZDTE_DIR)):
         d = os.path.join(ZDTE_DIR, sym)
@@ -129,10 +136,26 @@ def _merge_csv(mine_path: str, repo_path: str) -> int:
         theirs = pd.DataFrame(columns=mine.columns)
 
     before = len(theirs)
-    key = [c for c in ("day", "ts_utc", "strike", "cp") if c in mine.columns]
-    both = (pd.concat([theirs, mine], ignore_index=True)
-              .drop_duplicates(subset=key or None)
-              .sort_values([c for c in ("ts_utc", "cp", "strike") if c in mine.columns]))
+    # key ต้องมาจาก **ทั้งสองฝั่ง** ไม่ใช่ฝั่งเราฝ่ายเดียว
+    # ถ้าไฟล์เราขาดคอลัมน์ (schema คนละรุ่น) key จะหดเหลือ ["strike","cp"]
+    # แล้ว drop_duplicates ไปลบ *ทุก timestamp ของ strike นั้นที่อยู่ในไฟล์ remote*
+    # เหลือแถวเดียว = ลบของคนอื่นทิ้งเพราะไฟล์เราผิดรูป
+    both = pd.concat([theirs, mine], ignore_index=True)
+    # ต้องเป็น **union** ของคอลัมน์ทั้งสองฝั่ง (= คอลัมน์ของ both หลัง concat)
+    # ไม่ใช่ intersection: ถ้าฝั่งหนึ่งขาด ts_utc แล้วใช้ intersection
+    # key จะหดเหลือ (strike, cp) ซึ่งเป็นบั๊กเดิมเป๊ะ ๆ
+    # ด้วย union แถวที่ขาด ts_utc จะได้ NaN ซึ่งไม่ชนกับใคร → ถูกเก็บไว้เป็นแถวแยก
+    # เสียพื้นที่นิดหน่อย ดีกว่าลบข้อมูลของ remote ทิ้ง
+    key = [c for c in ("day", "ts_utc", "strike", "cp") if c in both.columns]
+    if key:
+        both = both.drop_duplicates(subset=key)
+    else:
+        # ไม่มีคอลัมน์ key ร่วมกันเลย = เทียบไม่ได้ ห้ามเดา — เก็บทุกแถวไว้ก่อน
+        print(f"  !! {os.path.basename(repo_path)}: ไม่มีคอลัมน์ key ร่วมกัน "
+              "— รวมโดยไม่ตัดซ้ำ", file=sys.stderr)
+    sort_by = [c for c in ("ts_utc", "cp", "strike") if c in both.columns]
+    if sort_by:
+        both = both.sort_values(sort_by)
 
     os.makedirs(os.path.dirname(repo_path) or ".", exist_ok=True)
     both.to_csv(repo_path, index=False, lineterminator="\n",
@@ -166,10 +189,20 @@ def merge(src: str) -> int:
                 else:
                     continue
             except Exception as e:                       # noqa: BLE001
-                # รวมไฟล์เดียวพังต้องไม่ทำให้ไฟล์อื่นหายไปด้วย — ก็อปทับตรง ๆ ดีกว่าไม่ได้อะไรเลย
-                print(f"  !! รวม {rel} ไม่สำเร็จ ({type(e).__name__}: {e}) — ใช้ของเราทับ",
-                      file=sys.stderr)
-                shutil.copy2(mine_path, repo_path)
+                # ── ห้ามก็อปทับของ remote เมื่อรวมไม่สำเร็จ ──
+                # ของเดิมเขียนว่า "ใช้ของเราทับ ดีกว่าไม่ได้อะไรเลย" ซึ่งผิดเมื่อ
+                # **ฝั่งที่พังคือฝั่งเรา**: ไฟล์เรา 0 ไบต์ → EmptyDataError → ก็อปทับ
+                # → ไฟล์ใน repo เหลือ 0 ไบต์ แล้ว commit ทับของจริงบน origin
+                # ของ remote คือความจริงร่วม เสียของเราไฟล์เดียวยังกู้ได้จากรอบหน้า
+                # เสียของ remote คือเสียของทุกคน → ทับได้เฉพาะตอน remote ยังไม่มีไฟล์นั้น
+                if not os.path.exists(repo_path):
+                    print(f"  !! รวม {rel} ไม่สำเร็จ ({type(e).__name__}: {e}) "
+                          "— remote ยังไม่มีไฟล์นี้ ใช้ของเราแทน", file=sys.stderr)
+                    shutil.copy2(mine_path, repo_path)
+                else:
+                    print(f"::error::รวม {rel} ไม่สำเร็จ ({type(e).__name__}: {e}) "
+                          "— เก็บของ remote ไว้ ข้อมูลรอบนี้ของเราไม่ถูกรวม",
+                          file=sys.stderr)
                 continue
             total += added
             print(f"  รวม {rel}: +{added} record จากฝั่งเรา")

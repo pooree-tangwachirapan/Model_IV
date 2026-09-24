@@ -158,9 +158,17 @@ def render_zero_dte_tab(sym: str, name: str):
             key="zdte_dl_html",
             use_container_width=True,
         )
-        with st.expander("ดูรายงานในหน้านี้เลย", expanded=False):
-            # height คงที่ — ปล่อยให้ยืดตามเนื้อหาไม่ได้ Streamlit ต้องรู้ความสูงล่วงหน้า
-            st.components.v1.html(html, height=900, scrolling=True)
+        # พรีวิวในหน้าจอต้องฝัง HTML ทั้งก้อนเป็น srcdoc ของ iframe
+        # แบบ standalone ที่ฝัง plotly.js มาด้วยจะ ~4 MB ซึ่งทำให้เบราว์เซอร์อืดชัดเจน
+        # และ expander ของ Streamlit **รันเนื้อในเสมอแม้ยังไม่กาง** จึงกันตั้งแต่ตรงนี้
+        mb = len(html) / 1024 / 1024
+        if mb > 2:
+            st.caption(f"ไฟล์ {mb:.1f} MB — ใหญ่เกินจะพรีวิวในหน้านี้ "
+                       "กดดาวน์โหลดแล้วเปิดในเบราว์เซอร์แทน")
+        else:
+            with st.expander("ดูรายงานในหน้านี้เลย", expanded=False):
+                # height คงที่ — ปล่อยให้ยืดตามเนื้อหาไม่ได้ Streamlit ต้องรู้ความสูงล่วงหน้า
+                st.components.v1.html(html, height=900, scrolling=True)
 
     # ── ดาวน์โหลด CSV ดิบ ────────────────────────────────────────
     st.markdown("#### ข้อมูลดิบ")

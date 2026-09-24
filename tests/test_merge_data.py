@@ -135,6 +135,42 @@ try:
     md.merge(st4)
     check("รวม CSV ซ้ำไม่เพิ่มแถว", len(pd.read_csv(CSV)) == 4, f"ได้ {len(pd.read_csv(CSV))}")
 
+    print("\n=== 7. รวมไม่สำเร็จ ต้องไม่ทับของ remote ทิ้ง ===")
+    # บั๊กจริง: เดิมเขียนว่า "ใช้ของเราทับ ดีกว่าไม่ได้อะไรเลย" ซึ่งผิดเมื่อฝั่งที่พัง
+    # คือฝั่งเรา — ไฟล์เรา 0 ไบต์ → ก็อปทับ → ไฟล์ใน repo เหลือ 0 ไบต์ แล้ว commit
+    # ทับของจริงบน origin
+    CSV2 = os.path.join("zero_dte", "QQQ", "2026-09-26.csv")
+    pd.DataFrame([zrow(T1, 740.0), zrow(T1, 745.0), zrow(T2, 740.0)]).to_csv(CSV2, index=False)
+    st5 = os.path.join(ROOT, "stash5")
+    os.makedirs(os.path.join(st5, "zero_dte", "QQQ"), exist_ok=True)
+    open(os.path.join(st5, "zero_dte", "QQQ", "2026-09-26.csv"), "w").close()   # 0 ไบต์
+    md.merge(st5)
+    kept = pd.read_csv(CSV2)
+    check("ไฟล์ของ remote ยังครบ 3 แถว ไม่ถูกทับด้วยไฟล์ว่าง", len(kept) == 3, f"ได้ {len(kept)}")
+
+    # แต่ถ้า remote ยังไม่มีไฟล์นั้น ใช้ของเราได้ (ไม่มีอะไรให้เสีย)
+    st6 = os.path.join(ROOT, "stash6")
+    os.makedirs(os.path.join(st6, "zero_dte", "QQQ"), exist_ok=True)
+    open(os.path.join(st6, "zero_dte", "QQQ", "2026-09-27.csv"), "w").close()
+    md.merge(st6)
+    check("remote ไม่มีไฟล์ → ใช้ของเราแทนได้",
+          os.path.exists(os.path.join("zero_dte", "QQQ", "2026-09-27.csv")))
+
+    print("\n=== 8. key ของ dedupe ต้องมาจากทั้งสองฝั่ง ===")
+    # บั๊กจริง: key เอาจาก mine.columns ฝ่ายเดียว ถ้าไฟล์เราขาด ts_utc
+    # key หดเหลือ (strike,cp) แล้วลบ *ทุก timestamp ของ strike นั้นในไฟล์ remote*
+    CSV3 = os.path.join("zero_dte", "QQQ", "2026-09-28.csv")
+    T3 = "2026-09-28T14:05:00+00:00"
+    pd.DataFrame([zrow(T1, 740.0), zrow(T2, 740.0), zrow(T3, 740.0)]).to_csv(CSV3, index=False)
+    st7 = os.path.join(ROOT, "stash7")
+    os.makedirs(os.path.join(st7, "zero_dte", "QQQ"), exist_ok=True)
+    thin = pd.DataFrame([zrow(T1, 740.0)]).drop(columns=["ts_utc"])       # schema คนละรุ่น
+    thin.to_csv(os.path.join(st7, "zero_dte", "QQQ", "2026-09-28.csv"), index=False)
+    md.merge(st7)
+    after = pd.read_csv(CSV3)
+    check("ทุก timestamp ของ remote ยังอยู่ครบ ไม่ถูกยุบเหลือแถวเดียว",
+          after["ts_utc"].notna().sum() == 3, f"เหลือ {after['ts_utc'].notna().sum()} แถวที่มี ts")
+
 finally:
     os.chdir(cwd)
     shutil.rmtree(ROOT, ignore_errors=True)

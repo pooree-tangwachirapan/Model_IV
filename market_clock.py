@@ -189,6 +189,26 @@ def slot_utc(d: date, slot: str) -> datetime | None:
     return s[0] + timedelta(minutes=SLOTS[slot])
 
 
+def month_to_report(d: date | None = None) -> str | None:
+    """
+    ถ้า `d` เป็น **วันทำการแรกของเดือน** คืนเดือนก่อนหน้า ("2026-08") · ไม่ใช่ก็คืน None
+
+    ใช้ตัดสินว่าวันนี้ควรส่งรายงานรายเดือนไหม — แทนการเช็ค `date -u +%d = "01"`
+    ที่ของเดิมใช้ ซึ่งพังเพราะ GitHub ดีเลย์: cron ตั้ง 21:31 UTC วันที่ 1
+    พอสาย 262 นาที (ค่าเฉลี่ยที่วัดได้) เวลาจริงข้ามเที่ยงคืนไปเป็นวันที่ 2
+    แล้ว `date -u +%d` ตอบ "02" → ข้ามเงียบ **รายงานรายเดือนจึงแทบไม่เคยออกเลย**
+
+    วิธีนี้ไม่ผูกกับนาฬิกา UTC และไม่ผูกกับ "วันที่ 1" ที่อาจเป็นวันหยุด/เสาร์อาทิตย์
+    """
+    d = d or today_et()
+    if not is_trading_day(d):
+        return None
+    prev = prev_trading_day(d)
+    if (prev.year, prev.month) == (d.year, d.month):
+        return None                                # ไม่ใช่วันทำการแรกของเดือน
+    return f"{prev.year:04d}-{prev.month:02d}"
+
+
 def session_progress(now: datetime | None = None) -> dict:
     """
     สถานะตลาดตอนนี้ — ใช้ตัดสินใจในโค้ดและพิมพ์ให้คนอ่านได้ด้วย
@@ -217,8 +237,9 @@ def main() -> int:
     import argparse
 
     ap = argparse.ArgumentParser(description="นาฬิกาตลาดสหรัฐ — ตอบเป็น epoch สำหรับ bash")
-    ap.add_argument("what", choices=["epoch", "iso", "trading", "info"],
-                    help="epoch=วินาที UNIX · iso=ISO8601 · trading=1/0 · info=สรุปอ่านได้")
+    ap.add_argument("what", choices=["epoch", "iso", "trading", "info", "report-month"],
+                    help="epoch=วินาที UNIX · iso=ISO8601 · trading=1/0 · info=สรุปอ่านได้ · "
+                         "report-month=เดือนที่ควรสรุป (ว่าง+exit 1 ถ้ายังไม่ถึงรอบ)")
     ap.add_argument("--slot", default="premarket",
                     help="premarket | open | open30 | close")
     ap.add_argument("--date", default="", help="YYYY-MM-DD (ว่าง = วันนี้ตามเวลา ET)")
@@ -230,10 +251,26 @@ def main() -> int:
         print("1" if is_trading_day(d) else "0")
         return 0
 
+    if a.what == "report-month":
+        m = month_to_report(d)
+        print(m or "")
+        return 0 if m else 1                       # exit 1 = ยังไม่ถึงรอบรายงาน
+
     if a.what == "info":
-        p = session_progress()
+        # ต้องถาม `d` ไม่ใช่ session_progress() ซึ่งดูแต่ "วันนี้" —
+        # ของเดิมใส่ --date เป็นวันหยุดแล้วพังด้วย TypeError เพราะ trading มาจากวันนี้
+        # แต่ slot_utc ใช้วันที่ส่งมา (คนละวัน) แล้วคืน None
+        p = session_progress() if d == today_et() else {
+            "date": d.isoformat(), "trading": is_trading_day(d),
+            "phase": "-", "early_close": is_early_close(d),
+            "open_utc": session(d)[0] if is_trading_day(d) else None,
+            "close_utc": session(d)[1] if is_trading_day(d) else None,
+        }
         print(f"วันที่ (ET)     : {p['date']}")
         print(f"ตลาดเปิดวันนี้ : {'ใช่' if p['trading'] else 'ไม่ (เสาร์/อาทิตย์ หรือวันหยุด)'}")
+        rm = month_to_report(d)
+        if rm:
+            print(f"รอบรายงานเดือน : {rm} (วันทำการแรกของเดือน)")
         if p["trading"]:
             print(f"ช่วง           : {p['phase']}")
             print(f"เปิด (UTC)     : {p['open_utc']:%Y-%m-%d %H:%M}")

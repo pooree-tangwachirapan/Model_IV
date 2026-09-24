@@ -328,6 +328,17 @@ def load(sym: str, day: date | str) -> pd.DataFrame:
     return df
 
 
+def _has_header(path: str) -> bool:
+    """ไฟล์นี้มีอยู่จริงและขึ้นต้นด้วยหัวตารางไหม (ไฟล์ 0 ไบต์ = ไม่มี)"""
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return False
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.readline().startswith(COLUMNS[0])
+    except OSError:
+        return False
+
+
 def _append_csv(path: str, frame: pd.DataFrame, *, header: bool) -> None:
     """
     ต่อท้ายไฟล์ CSV
@@ -355,12 +366,23 @@ def write_rows(rows: pd.DataFrame, *, sym: str | None = None,
         return {"written": 0, "skipped": 0, "path": None, "reason": "ไม่มีแถวให้เขียน"}
 
     sym = sym or str(rows["sym"].iloc[0])
-    # ยึดวันตาม expiry ของ 0DTE ไม่ใช่วันที่ในเครื่อง — ทำให้ไฟล์ = expiry เสมอ
-    day = day or str(rows["expiry"].iloc[0])
+    # ── ยึดวันตาม "วันที่ของ snapshot ตามเวลา ET" ไม่ใช่ expiry ──
+    # ของเดิมใช้ expiry ซึ่งพังเมื่อบันทึกนอกเวลาตลาด: ตอน 17:00 ET กระดานเหลือ
+    # expiry ของพรุ่งนี้แล้ว → แถวนั้นไปลงไฟล์ของพรุ่งนี้ พอพรุ่งนี้บันทึกจริง
+    # ยอด volume สะสมของเมื่อวานจะอยู่ต้นไฟล์ → vol_delta ของ snapshot แรก ๆ
+    # ติดลบแล้วถูก clip เป็น 0 และ day_summary รายงานปริมาณของเมื่อวานแทน
+    # = ข้อมูลทั้งวันเสียแบบเงียบ ตอนนี้แถวนั้นจะลงไฟล์ของวันที่บันทึกจริง
+    # พร้อม dte=1 ซึ่งตรงไปตรงมาและไม่ปนกับใคร
+    day = day or str(pd.Timestamp(rows["ts_utc"].iloc[0]).tz_convert(mc.ET).date())
     p = path_for(sym, day)
 
+    # ── สองคำถามคนละเรื่อง อย่าใช้คำตอบเดียวกัน ──
+    # "ต้องเขียน header ไหม" = ดู **ไฟล์รายวัน** ล้วน ๆ
+    # "แถวไหนเขียนไปแล้ว"   = ดู load() ซึ่งรวมคลังรายเดือนด้วย
+    # ของเดิมใช้ load() ตัดสินทั้งคู่ → ไฟล์รายวัน 0 ไบต์ + คลังมีข้อมูล
+    # จะได้ fresh=False แล้วต่อท้ายโดยไม่มีหัวตาราง อ่านกลับมาแถวแรกกลายเป็นชื่อคอลัมน์
+    fresh = not _has_header(p)
     existing = load(sym, day)
-    fresh = not os.path.exists(p) or existing.empty
 
     def key(df):
         return set(zip(df["ts_utc"].astype(str).str[:16],
@@ -405,9 +427,11 @@ def rollup_month(sym: str, month: str, *, remove: bool = True) -> dict:
         return {"month": month, "days": 0, "reason": "ไม่มีไฟล์รายวันของเดือนนี้"}
 
     frames = []
+    used_days: list[str] = []            # เฉพาะวันที่ "เข้าคลังได้จริง" เท่านั้นที่ลบได้
     for d in days:
         f = _read(path_for(sym, d))
         if f is not None and not f.empty:
+            used_days.append(d)
             # ติดป้ายว่ามาจากไฟล์วันไหน — มีแค่ในคลัง ไม่มีในไฟล์รายวัน
             # ห้ามใช้ `expiry` แทน: ปกติสองค่านี้เท่ากัน แต่ถ้าวันไหนกระดานไม่มี
             # expiry ของวันนั้น (เช่นบันทึกหลังตลาดปิด) expiry จะเป็นวันถัดไป
@@ -436,18 +460,25 @@ def rollup_month(sym: str, month: str, *, remove: bool = True) -> dict:
     # ลบไฟล์รายวัน **หลัง** เขียนคลังสำเร็จ และหลังอ่านกลับมายืนยันว่าครบ
     verify = _read(arch)
     ok = verify is not None and len(verify) == len(big)
+
+    # ลบเฉพาะ `used_days` ไม่ใช่ `days` ทั้งหมด — ของเดิมวนลบทุกไฟล์ที่เจอ
+    # รวมทั้งไฟล์ที่อ่านไม่ออกและไม่เคยถูกรวมเข้าคลัง (verify เทียบกับ big
+    # ซึ่งไม่นับไฟล์พังอยู่แล้ว จึงยังขึ้น verified=True) = ข้อมูลหายถาวร
+    skipped = sorted(set(days) - set(used_days))
     removed = 0
     if remove and ok:
-        for d in days:
+        for d in used_days:
             try:
                 os.remove(path_for(sym, d))
                 removed += 1
             except OSError as e:
                 print(f"  !! ลบ {d} ไม่ได้ ({e})", file=sys.stderr)
+    for d in skipped:
+        print(f"  !! {d} อ่านไม่ออก — ไม่ได้รวมเข้าคลัง และไม่ลบทิ้ง", file=sys.stderr)
 
-    return {"month": month, "days": len(days), "rows": len(big),
+    return {"month": month, "days": len(used_days), "rows": len(big),
             "archive": arch, "bytes": os.path.getsize(arch),
-            "removed": removed, "verified": ok, "reason": ""}
+            "removed": removed, "verified": ok, "skipped": skipped, "reason": ""}
 
 
 def record(sym: str = "QQQ", *, fetch=None, ts: datetime | None = None) -> dict:
