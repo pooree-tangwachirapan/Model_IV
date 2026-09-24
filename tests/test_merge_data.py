@@ -45,8 +45,11 @@ try:
     ft.save([trade("QQQ-20260820-1552")], LED)
     stash = os.path.join(ROOT, "stash")
     md.save(stash)
-    check("--save เก็บทั้ง log และ ledger", os.path.exists(os.path.join(stash, "log", "2026-08.jsonl"))
-          and os.path.exists(os.path.join(stash, "ledger.json")))
+    # stash เก็บ path เต็มรวมชื่อโฟลเดอร์บนสุด (เปลี่ยน 25 ก.ย. 2026 ตอนเพิ่ม zero_dte/)
+    # ถ้าตัด prefix ทิ้ง ไฟล์จาก forward_test/ กับ zero_dte/ จะชนกันใน stash
+    check("--save เก็บทั้ง log และ ledger พร้อมชื่อโฟลเดอร์",
+          os.path.exists(os.path.join(stash, "forward_test", "log", "2026-08.jsonl"))
+          and os.path.exists(os.path.join(stash, "forward_test", "ledger.json")))
 
     # remote (งาน B) เขียนคนละ record — จำลอง git reset --hard origin/main
     # คือไฟล์ในรีโปกลายเป็นของ remote ล้วน ของเราหายไปจากดิสก์ (แต่ยังอยู่ใน stash)
@@ -75,8 +78,9 @@ try:
     print("\n=== 3. ไม้ที่ปิดแล้วต้องไม่ถูกไม้เปิดทับ ===")
     ft.save([trade("T1", "open")], LED)              # remote ยังเปิด
     st2 = os.path.join(ROOT, "stash2")
-    os.makedirs(st2, exist_ok=True)
-    ft.save([dict(trade("T1", "loss"), pnl_usd=-100.0)], os.path.join(st2, "ledger.json"))
+    os.makedirs(os.path.join(st2, "forward_test"), exist_ok=True)
+    ft.save([dict(trade("T1", "loss"), pnl_usd=-100.0)],
+            os.path.join(st2, "forward_test", "ledger.json"))
     md.merge(st2)
     got = ft.load(LED)
     check("ไม้ปิดแล้วชนะ", len(got) == 1 and got[0]["status"] == "loss", f"ได้ {got[0]['status']}")
@@ -98,8 +102,38 @@ try:
     pr.append([rec("2026-09-01T15:00:00+00:00")], LOG9)
     st3 = os.path.join(ROOT, "stash3")
     md.save(st3)
-    files = sorted(os.listdir(os.path.join(st3, "log")))
+    files = sorted(os.listdir(os.path.join(st3, "forward_test", "log")))
     check("เก็บ log ครบทุกเดือน", files == ["2026-08.jsonl", "2026-09.jsonl"], f"ได้ {files}")
+
+    print("\n=== 6. CSV ของ 0DTE ต้องรวมแบบ key เหมือนกัน ===")
+    # daily-report กับ armed-alert เขียนไฟล์วันเดียวกันได้ — ถ้าปล่อยให้ git รวมเอง
+    # จะชนแบบเดียวกับที่ log เคยชนตอน run #33 ต่างกันแค่เป็น CSV
+    import pandas as pd
+    CSV = os.path.join("zero_dte", "QQQ", "2026-09-25.csv")
+    os.makedirs(os.path.dirname(CSV), exist_ok=True)
+
+    def zrow(ts, strike, cp="C", vol=10):
+        return {"ts_utc": ts, "sym": "QQQ", "expiry": "2026-09-25", "dte": 0,
+                "spot": 740.0, "strike": strike, "cp": cp, "bid": 1.0, "ask": 1.2,
+                "mid": 1.1, "last": 1.1, "volume": vol, "open_interest": 5,
+                "iv": 0.2, "delta": 0.5, "gamma": 0.02, "vega": 0.1, "theta": -0.8,
+                "day_open": 1.0, "day_high": 1.3, "day_low": 0.9, "prev_close": 1.0}
+
+    T1, T2 = "2026-09-25T13:35:00+00:00", "2026-09-25T13:50:00+00:00"
+    pd.DataFrame([zrow(T1, 740.0), zrow(T1, 745.0)]).to_csv(CSV, index=False)
+    st4 = os.path.join(ROOT, "stash4")
+    md.save(st4)
+    check("--save เก็บไฟล์ 0DTE ด้วย",
+          os.path.exists(os.path.join(st4, "zero_dte", "QQQ", "2026-09-25.csv")))
+
+    # remote เขียน snapshot คนละเวลาทับไฟล์เดียวกัน (= git reset --hard origin/main)
+    pd.DataFrame([zrow(T2, 740.0), zrow(T2, 745.0)]).to_csv(CSV, index=False)
+    md.merge(st4)
+    got = pd.read_csv(CSV)
+    check("CSV ได้ครบทั้งของเราและของ remote", len(got) == 4, f"ได้ {len(got)}")
+    check("มีครบทั้งสองช่วงเวลา", set(got["ts_utc"]) == {T1, T2}, f"ได้ {sorted(set(got['ts_utc']))}")
+    md.merge(st4)
+    check("รวม CSV ซ้ำไม่เพิ่มแถว", len(pd.read_csv(CSV)) == 4, f"ได้ {len(pd.read_csv(CSV))}")
 
 finally:
     os.chdir(cwd)

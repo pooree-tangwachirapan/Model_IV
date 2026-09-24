@@ -1,17 +1,65 @@
 name: Daily Signal Recap
 
-# ส่งอีเมลอัตโนมัติ จันทร์–ศุกร์
-# 13:00 UTC = 09:00 ET (ก่อนตลาดเปิด 30 นาที) = 20:00 เวลาไทย
-# แก้เวลาได้ที่ cron ด้านล่าง (เป็น UTC เสมอ)
+# ═══════════════════════════════════════════════════════════════════════════
+# เมลเตรียมตัว 2 รอบต่อวันทำการ
+#   รอบ 1  09:00 ET (ก่อนระฆังเปิด 30 นาที)  — เตรียมแผนก่อนเข้าตลาด
+#   รอบ 2  10:00 ET (หลังเปิด 30 นาที)       — สรุป opening range ของจริง
+#
+# ⚠️ บทเรียนใหญ่ที่สุดของไฟล์นี้ (แก้ 25 ก.ย. 2026)
+# ───────────────────────────────────────────────────────────────────────────
+# ของเดิมตั้ง `cron: "0 13 * * 1-5"` แล้วเชื่อว่า GitHub จะยิงตอน 13:00 UTC
+# **มันไม่ยิงตามเวลาเลย** วัดจาก run จริง 27 รอบ (19 ส.ค. – 24 ก.ย. 2026):
+#
+#     19–26 ส.ค.   สาย  38–48 นาที
+#     27 ส.ค.      สาย 583 นาที       ← ตั้งแต่นี้ไปสายเป็นชั่วโมงทุกวัน
+#     28 ส.ค.      สาย 590 นาที
+#     1–24 ก.ย.    สาย 221–324 นาที   (เฉลี่ย ~262 นาที = 4 ชม. 22 นาที)
+#
+# แปลว่า "เมลก่อนเปิดตลาด 30 นาที" มาถึงจริงตอนบ่ายสองของ ET
+# ทุกวันมา 1 เดือนเต็ม — คือมาหลังตลาดเปิดไปแล้ว 4 ชั่วโมง ใช้เตรียมตัวไม่ได้เลย
+# และ run ทุกอันขึ้น success เพราะเมลออกจริง แค่ผิดเวลา จึงไม่มีอะไรเตือน
+#
+# ✅ ทางแก้: **เลิกเชื่อเวลาที่ GitHub เริ่มงาน**
+#   1. ตั้ง cron เป็น "บันได" หลายชั้น เผื่อสาย 0–5 ชม. — ชั้นไหนมาก่อนเวลาเป้าก็ใช้ชั้นนั้น
+#   2. งานที่เริ่มแล้ว **คำนวณเวลาเป้าเอง** จาก market_clock.py แล้ว `sleep` ไปจนถึงเวลานั้น
+#      → เมลออกตรงเวลาเป๊ะ ไม่ว่า GitHub จะเริ่มงานให้ตอนไหน
+#   3. ชั้นที่มาช้าเกินก็ออกเอง ไม่ส่งเมลซ้ำ (concurrency กันอีกชั้น)
+#   เป็นแนวคิดเดียวกับ armed-alert.yml ที่พิสูจน์แล้วว่าได้ผล (ลูปในงาน ไม่ใช่ cron ถี่)
+#
+# 🕐 เวลาเป้าคำนวณจาก market_clock.py ไม่ได้ฝัง UTC ไว้ → DST ถูกเองทั้ง EDT/EST
+#    และวันหยุดตลาดก็ข้ามให้เอง (ของเดิมส่งเมลวันหยุดด้วยเพราะ cron ไม่รู้จักวันหยุด)
+# ═══════════════════════════════════════════════════════════════════════════
+
 on:
   schedule:
-    - cron: "0 13 * * 1-5"
-  workflow_dispatch:        # กดรันเองได้จากแท็บ Actions
+    # บันไดเผื่อดีเลย์ · นาทีที่ 17/23/41 ไม่ใช่ :00 เพราะต้นชั่วโมงคือช่วงที่ GitHub แน่นสุด
+    # ครอบคลุมเป้า 13:00 UTC (EDT) และ 14:00 UTC (EST)
+    - cron: "17 8 * * 1-5"     # สาย 4-5 ชม. ก็ยังทัน
+    - cron: "23 9 * * 1-5"
+    - cron: "41 10 * * 1-5"
+    - cron: "17 11 * * 1-5"
+    - cron: "23 12 * * 1-5"    # ชั้นสุดท้ายสำหรับ EDT — ถ้า GitHub ตรงเวลาวันนั้นพอดี
+    - cron: "41 13 * * 1-5"    # ชั้นสุดท้ายสำหรับ EST
+  workflow_dispatch:
     inputs:
       symbols:
         description: "Symbols คั่นด้วย , (เช่น QQQ,SPY)"
         required: false
         default: "QQQ"
+      now:
+        description: "ส่งเดี๋ยวนี้เลย ไม่ต้องรอเวลาเป้า (ทดสอบ)"
+        type: boolean
+        default: false
+      slots:
+        description: "รอบที่จะส่ง: premarket,open30 (ว่าง = ทั้งคู่)"
+        required: false
+        default: ""
+
+# กันเมลซ้ำเมื่อบันไดหลายชั้นมาพร้อมกัน — ชั้นที่วิ่งอยู่ทำงานจนจบ
+# ชั้นที่มาทีหลังรอคิว แล้วพอได้วิ่งก็จะเห็นว่าเลยเวลาเป้าไปแล้วจึงออกเอง
+concurrency:
+  group: daily-report-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write          # ต้องเขียน forward_test/log/ กลับเข้ารีโป
@@ -19,7 +67,9 @@ permissions:
 jobs:
   report:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # เพดาน job ของ GitHub คือ 6 ชม. · ชั้นแรก 08:17 UTC ถึงเป้า 14:00 UTC (EST) = 5h43m
+    # ตั้ง 350 นาทีแล้วให้สคริปต์ตัดสินใจเองว่าจะรอหรือออก (ดู MAX_WAIT_MIN)
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v7
 
@@ -28,46 +78,142 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      # ── ด่านแรก: วันนี้ตลาดเปิดไหม ──────────────────────────────
+      # เช็คก่อน pip install เพื่อไม่เผารันเนอร์ในวันหยุด (market_clock ใช้แต่ stdlib)
+      - name: Check trading day
+        id: clock
+        run: |
+          if [ "$(python market_clock.py trading)" != "1" ]; then
+            echo "วันนี้ตลาดไม่เปิด (เสาร์/อาทิตย์ หรือวันหยุดตลาด) — จบงาน"
+            python market_clock.py info
+            echo "skip=yes" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python market_clock.py info
+          {
+            echo "premarket=$(python market_clock.py epoch --slot premarket)"
+            echo "open30=$(python market_clock.py epoch --slot open30)"
+            echo "skip=no"
+          } >> "$GITHUB_OUTPUT"
+
+      # ── ด่านสอง: เรามาทันไหม ตัดสินก่อนลง dependency ────────────
+      # ถ้ามาเช้าเกินจะต้องนอนเกิน MAX_WAIT_MIN หรือมาสายเกินเวลาเป้าไปแล้ว
+      # ให้ออกตรงนี้เลย — ประหยัดรันเนอร์ และปล่อยให้บันไดชั้นอื่นจัดการ
+      - name: Decide which slots this run can still serve
+        id: plan
+        if: steps.clock.outputs.skip == 'no'
+        env:
+          WANT: ${{ inputs.slots || 'premarket,open30' }}
+          NOW_MODE: ${{ inputs.now }}
+        run: |
+          set -u
+          NOW=$(date -u +%s)
+          PRE=${{ steps.clock.outputs.premarket }}
+          OP30=${{ steps.clock.outputs.open30 }}
+          MAX_WAIT_MIN=330          # นอนรอได้มากสุด (เพดาน job 6 ชม. เว้นที่ให้ขั้นตอนอื่น)
+          LATE_GRACE_MIN=20         # เลยเวลาเป้าไม่เกินเท่านี้ ยังส่งได้ (ติดป้ายว่าสาย)
+
+          plan=""
+          for pair in "premarket:$PRE" "open30:$OP30"; do
+            name=${pair%%:*}; t=${pair##*:}
+            case ",$WANT," in *",$name,"*) ;; *) continue ;; esac
+
+            if [ "$NOW_MODE" = "true" ]; then plan="$plan $name:now"; continue; fi
+
+            wait=$(( (t - NOW) / 60 ))
+            if [ "$wait" -gt "$MAX_WAIT_MIN" ]; then
+              echo "$name: ยังอีก $wait นาที — เกินที่นอนรอได้ ปล่อยให้ cron ชั้นถัดไปทำ"
+            elif [ "$wait" -lt "-$LATE_GRACE_MIN" ]; then
+              echo "$name: เลยเวลาไป $(( -wait )) นาที — สายเกินไป ไม่ส่ง"
+            else
+              plan="$plan $name:$t"
+              echo "$name: จะส่ง (อีก $wait นาที)"
+            fi
+          done
+
+          plan=$(echo "$plan" | xargs || true)
+          echo "plan=$plan" >> "$GITHUB_OUTPUT"
+          if [ -z "$plan" ]; then
+            echo "รอบนี้ไม่มีอะไรต้องส่ง — จบงานโดยไม่ถือรันเนอร์ไว้"
+          fi
+
       - name: Install dependencies
+        if: steps.plan.outputs.plan != ''
         run: |
           python -m pip install --upgrade pip
           pip install streamlit numpy pandas scipy plotly requests yfinance
 
-      - name: Build and send report
+      # ── นอนรอถึงเวลาเป้า แล้วส่ง ─────────────────────────────────
+      - name: Wait for each slot then send
+        if: steps.plan.outputs.plan != ''
         env:
-          # SMTP_USER / SMTP_PASS = จำเป็น
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           # 3 ตัวล่างไม่ตั้งก็ได้ — secret ที่ไม่มีจะมาเป็นค่าว่าง
           # send_report.py ถือว่า "ว่าง = ไม่ได้ตั้ง" แล้วใช้ default
-          # (smtp.gmail.com : 587 · MAIL_TO ว่าง = ส่งหาตัวเอง)
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           MAIL_TO:   ${{ secrets.MAIL_TO }}
           SYMBOLS:   ${{ inputs.symbols || 'QQQ' }}
+          PLAN:      ${{ steps.plan.outputs.plan }}
         run: |
-          # เก็บ output แล้วโยนบรรทัดที่เป็น error ออกเป็น ::error:: ด้วย
-          # ไม่งั้นเวลาพัง annotation บอกแค่ 'exit code 1' ซึ่งอ่านสาเหตุไม่ได้
-          # ถ้าไม่มีสิทธิ์เปิด log (เกิดจริง 24-25 ส.ค.: เมลไม่ออกสองวันโดยไม่รู้สาเหตุ)
-          set -o pipefail
-          if python send_report.py 2>&1 | tee /tmp/send.log; then
-            exit 0
-          fi
-          # ยิงบรรทัดท้าย ๆ ออกเป็น annotation ทีละบรรทัด — ไม่ต้อง match ข้อความ
-          # (send() มีข้อความ error หลายแบบ จับด้วย pattern เดียวพลาดแน่)
-          grep -av "^$" /tmp/send.log | tail -6 | while IFS= read -r L; do
-            echo "::error::$L"
+          set -u
+          rc=0
+          for item in $PLAN; do
+            name=${item%%:*}; t=${item##*:}
+
+            if [ "$t" != "now" ]; then
+              now=$(date -u +%s)
+              if [ "$now" -lt "$t" ]; then
+                echo "::group::รอถึงรอบ $name ($(date -u -d "@$t" +%H:%M) UTC · อีก $(( (t - now) / 60 )) นาที)"
+                sleep $(( t - now ))
+                echo "::endgroup::"
+              fi
+              late=$(( ($(date -u +%s) - t) / 60 ))
+            else
+              late=0
+            fi
+
+            case "$name" in
+              premarket) label="ก่อนเปิดตลาด 30 นาที" ;;
+              open30)    label="เปิดตลาดแล้ว 30 นาที" ;;
+              *)         label="$name" ;;
+            esac
+            [ "$late" -gt 2 ] && label="$label · สาย ${late}m"
+
+            echo "▶ ส่งรอบ $name เวลา $(date -u +%H:%M) UTC · ป้าย: $label"
+
+            # เก็บ output แล้วโยนบรรทัดที่เป็น error ออกเป็น ::error:: ด้วย
+            # ไม่งั้นเวลาพัง annotation บอกแค่ 'exit code 1' ซึ่งอ่านสาเหตุไม่ได้
+            # ถ้าไม่มีสิทธิ์เปิด log (เกิดจริง 24-25 ส.ค.: เมลไม่ออกสองวันโดยไม่รู้สาเหตุ)
+            set -o pipefail
+            if python send_report.py --label "$label" 2>&1 | tee /tmp/send-$name.log; then
+              echo "✔ รอบ $name ส่งแล้ว"
+            else
+              rc=1
+              # ยิงบรรทัดท้าย ๆ ออกเป็น annotation ทีละบรรทัด — ไม่ต้อง match ข้อความ
+              # (send() มีข้อความ error หลายแบบ จับด้วย pattern เดียวพลาดแน่)
+              grep -av "^$" /tmp/send-$name.log | tail -6 | while IFS= read -r L; do
+                echo "::error::[$name] $L"
+              done
+            fi
+            set +o pipefail
+
+            # เก็บ 0DTE ตอนส่งเมลด้วย — สองรอบนี้อยู่หัวท้ายชั่วโมงแรกพอดี
+            # ซึ่งเป็นช่วงที่ armed-alert เก็บไม่ทันมาตลอด (ดู HANDOFF §5)
+            python zero_dte_cli.py record --symbols "$SYMBOLS" \
+              || echo "!! บันทึก 0DTE รอบ $name ไม่สำเร็จ ข้ามไป"
           done
-          exit 1
+          exit $rc
 
       # send_report เขียน forward_test/log/ ทุกครั้งที่ประเมิน — ถ้าไม่ commit
       # มันจะถูกสร้างในรันเนอร์แล้วหายไปพร้อม job (พลาดมาแล้วกับ ledger_breakout)
       - name: Commit prediction log
-        if: always()
+        if: always() && steps.plan.outputs.plan != ''
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add forward_test/ 2>/dev/null || true
+          git add forward_test/ zero_dte/ 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "ข้อมูลไม่เปลี่ยน — ไม่ต้อง commit"
             exit 0
@@ -86,7 +232,7 @@ jobs:
             git fetch origin "${GITHUB_REF_NAME}" || { sleep $((i * 5)); continue; }
             git reset --hard "origin/${GITHUB_REF_NAME}"   # ปลอดภัย: ข้อมูลอยู่ใน $STASH แล้ว
             python merge_data.py --merge "$STASH"
-            git add forward_test/ 2>/dev/null || true
+            git add forward_test/ zero_dte/ 2>/dev/null || true
             if git diff --cached --quiet; then
               echo "หลังรวมแล้วไม่มีอะไรใหม่ (อีกงานบันทึกไปแล้ว) — ไม่ต้อง push"
               pushed="yes"; break

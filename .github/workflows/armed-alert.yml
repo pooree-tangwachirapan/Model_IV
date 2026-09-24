@@ -1,6 +1,8 @@
 name: Armed Alert (intraday)
 
-# เช็คทุก 15 นาทีตลอดหน้าต่างเทรด · ส่งเมลเฉพาะตอนเพิ่งเข้าเกณฑ์ · บันทึก forward test ไปด้วย
+# ═══════════════════════════════════════════════════════════════════════════
+# เช็คทุก 15 นาทีตลอดหน้าต่างเทรด · ส่งเมลเฉพาะตอนเพิ่งเข้าเกณฑ์
+# · บันทึก forward test · บันทึก option 0DTE ทุก strike
 #
 # ทำไมวนลูปในงานเดียว ไม่ใช่ตั้ง cron 17 รอบ:
 #   ของเดิมตั้ง cron ไว้ 17 รอบ/วัน แต่วันจันทร์ 10 ส.ค. GitHub ยิงจริงแค่ 5 รอบ
@@ -8,28 +10,39 @@ name: Armed Alert (intraday)
 #   = GitHub ไม่ได้แค่ดีเลย์ มันทิ้งรอบทิ้ง ยิงจริงราวชั่วโมงละครั้งไม่ว่าจะตั้งถี่แค่ไหน
 #   → ให้ cron ยิงครั้งเดียวพอ แล้ว "งาน" นั้นนอนรอเองทุก 15 นาที ซึ่งควบคุมได้จริง
 #
-# วันหนึ่งแบ่งเป็นสองช่วง:
-#   09:28–10:18 ET  สังเกตอย่างเดียว — ประเมินและบันทึก log ทุก 15 นาที แต่ไม่ส่งเมล ไม่เปิดไม้
-#                   เพราะชั่วโมงแรกเป็นช่วง gamma whipsaw ที่ไม่ควรเข้าอยู่แล้ว
-#                   แต่เป็นช่วงที่ราคาขยับแรงที่สุด — ไม่เก็บไว้ก็ตอบทีหลังไม่ได้ว่าเกิดอะไรขึ้น
-#                   (เคสจริง 2026-08-19: ราคาไหล 721→712 ตอน 09:45 แล้วเราไม่มีข้อมูลช่วงนั้นเลย)
-#   10:18–14:35 ET  ทำงานเต็ม — ส่งเมลตอนเข้าเกณฑ์ และบันทึก forward test
+# ⚠️ แก้ใหญ่ 25 ก.ย. 2026 — ที่เก็บข้อมูลมาทั้งเดือนเป็นตัวอย่างที่เอียง
+# ───────────────────────────────────────────────────────────────────────────
+# ของเดิมตั้ง cron 12:50 UTC โดยคำนวณจากดีเลย์ที่วัดได้ตอนนั้น (35–41 นาที)
+# แต่ดีเลย์ของ GitHub โตขึ้นเป็น 220–590 นาทีตั้งแต่ 27 ส.ค. งานจึงเริ่มตอน 16:44–18:39 UTC
+# ขณะที่ `WINDOW_END` ฝังไว้ที่ 18:35 UTC → หลายวันงานเริ่มแล้วออกทันทีเพราะหน้าต่างปิดไปแล้ว
 #
-# cron 3 ตัวเป็นตัวสำรองซ้อนกัน เผื่อตัวแรกโดนทิ้ง — ตัวที่มาทีหลังเห็นว่าหน้าต่างปิดแล้วก็ออกเอง
-# concurrency ตั้ง cancel-in-progress: false เพื่อไม่ให้ตัวสำรองไปฆ่างานที่กำลังวิ่งอยู่
+# ผลที่พิสูจน์ได้จาก forward_test/log/ (550 record · 27 วัน):
+#     ช่วง 09:xx ET  มีแค่  10 record ทั้งเดือน   ← ช่วงสังเกตที่ตั้งใจเก็บ แทบไม่มีเลย
+#     ช่วง 13:xx ET  มี    168 record
+#     14 ก.ย. เก็บได้ 6 จุด (14:13–14:22)  ·  24 ก.ย. เก็บได้ 2 จุด
+# แปลว่าชุดข้อมูลที่จะเอาไปวัด edge เป็นภาพ "ท้ายวัน" ล้วน ไม่ใช่ทั้งวัน
+# สรุปอะไรจากมันตอนนี้ก็เอียงหมด — นี่คือสาเหตุที่ระบบดูไม่แม่น
 #
-# ข้อจำกัดที่เหลือ: cron เป็น UTC ไม่รู้จัก DST — ตารางนี้ตั้งสำหรับ EDT (มี.ค.–พ.ย.)
-# ช่วง EST ต้องบวก 1 ชม. ทุกบรรทัด รวมทั้ง WINDOW_END ด้านล่าง
+# ✅ ทางแก้ (แนวเดียวกับ daily-report.yml):
+#   1. เวลาทั้งหมดคำนวณจาก market_clock.py เป็น "นาทีนับจากระฆังเปิด" → DST ถูกเอง
+#      และวันหยุดตลาดข้ามให้เอง (ของเดิมเผารันเนอร์ในวันหยุดทุกครั้ง)
+#   2. cron เป็นบันไดทุก 30 นาที ครอบดีเลย์ 0–6 ชม.
+#   3. แต่ละชั้นตัดสินเองว่า "ยังคุ้มจะเริ่มไหม" — เริ่มเร็วไปจนงานจะโดน timeout
+#      ก่อนถึงขั้นตอน commit ก็ออกเลย (งานโดนฆ่า = ข้อมูลทั้งวันหาย ไม่ได้ commit)
+#
+# วันหนึ่งแบ่งเป็นสองช่วง (นับจากระฆังเปิด):
+#   −2 ถึง +48 นาที   สังเกตอย่างเดียว — ประเมินและบันทึกทุก 15 นาที แต่ไม่ส่งเมล ไม่เปิดไม้
+#                     เพราะชั่วโมงแรกเป็นช่วง gamma whipsaw ที่ไม่ควรเข้าอยู่แล้ว
+#                     แต่เป็นช่วงที่ราคาขยับแรงที่สุด — ไม่เก็บไว้ก็ตอบทีหลังไม่ได้ว่าเกิดอะไรขึ้น
+#                     (เคสจริง 2026-08-19: ราคาไหล 721→712 ตอน 09:45 แล้วเราไม่มีข้อมูลช่วงนั้นเลย)
+#   +48 ถึง +305 นาที ทำงานเต็ม — ส่งเมลตอนเข้าเกณฑ์ และบันทึก forward test
+# ═══════════════════════════════════════════════════════════════════════════
 
 on:
   schedule:
-    # ตั้งไว้ 12:50 ทั้งที่อยากเริ่ม 13:28 — เพราะ GitHub ดีเลย์ตารางนี้ 35–41 นาทีทุกวัน
-    # (20 ส.ค. 36 · 21 ส.ค. 35 · 24 ส.ค. 40 · 25 ส.ค. 41) ตั้งตรงเวลาแล้วได้ 14:0x ทุกครั้ง
-    # ซึ่งกินช่วงสังเกตหมด · ตั้งเผื่อ 38 นาทีแล้วมันจะมาลงราว ๆ ระฆังเปิดพอดี
-    # ถ้าวันไหน GitHub เร็วผิดปกติ ลูปมีตัวกันไม่ให้เริ่มก่อน OBSERVE_FROM อยู่แล้ว
-    - cron: "50 12 * * 1-5"
-    - cron: "50 13 * * 1-5"    # สำรอง เผื่อรอบแรกโดนทิ้ง
-    - cron: "50 14 * * 1-5"    # สำรองอีกชั้น
+    # บันไดทุก 30 นาที · นาทีที่ 07/37 ไม่ใช่ :00/:30 เพราะต้นชั่วโมงคือช่วงที่ GitHub แน่นสุด
+    # ชั้นที่ตกนอกกรอบจะออกเองภายใน ~20 วินาที (เช็คนาฬิกาก่อนลง dependency)
+    - cron: "7,37 7-14 * * 1-5"
   workflow_dispatch:
     inputs:
       symbols:
@@ -55,7 +68,7 @@ permissions:
 jobs:
   alert:
     runs-on: ubuntu-latest
-    timeout-minutes: 358       # เริ่มได้เร็วสุด 12:50 ถึง 18:35 UTC = 5 ชม. 45 นาที (เพดาน job = 6 ชม.)
+    timeout-minutes: 350       # เพดาน job ของ GitHub = 6 ชม. · เว้นที่ให้ commit ตอนท้าย
     steps:
       - uses: actions/checkout@v7
 
@@ -64,12 +77,66 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      # ── ตัดสินก่อนลง dependency ว่าวันนี้/รอบนี้ทำงานไหม ──────────
+      # market_clock ใช้แต่ stdlib จึงเช็คได้ทันทีหลัง checkout
+      - name: Plan the window
+        id: plan
+        env:
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' && 'yes' || 'no' }}
+          ALWAYS: ${{ inputs.always_send }}
+        run: |
+          set -u
+          if [ "$(python market_clock.py trading)" != "1" ]; then
+            echo "วันนี้ตลาดไม่เปิด — จบงาน"
+            python market_clock.py info
+            echo "go=no" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          python market_clock.py info
+
+          OPEN=$(python market_clock.py epoch --slot open)
+          CLOSE=$(python market_clock.py epoch --slot close)
+
+          # หน้าต่างเป็น "นาทีนับจากระฆังเปิด" → EDT/EST ถูกเองโดยไม่ต้องแก้อะไร
+          OBSERVE_FROM=$(( OPEN - 2 * 60 ))       # −2 นาที
+          TRADE_FROM=$((  OPEN + 48 * 60 ))       # +48 นาที
+          WINDOW_END=$((  OPEN + 305 * 60 ))      # +305 นาที (14:35 ET)
+          # วันครึ่งวันปิด 13:00 ET — อย่าวนเลยเวลาปิดจริง
+          [ "$WINDOW_END" -gt "$CLOSE" ] && WINDOW_END=$CLOSE
+
+          NOW=$(date -u +%s)
+          MAX_JOB_MIN=335        # ต้องจบ + commit ให้ทันก่อน timeout-minutes
+
+          if [ "$MANUAL" = "yes" ] && [ "$ALWAYS" = "true" ]; then
+            echo "กดเองพร้อม always_send — ข้ามด่านเวลาทั้งหมด"
+            OBSERVE_FROM=$NOW; TRADE_FROM=$NOW
+          elif [ "$NOW" -ge "$WINDOW_END" ]; then
+            echo "หน้าต่างปิดไปแล้ว (ตอนนี้ $(date -u +%H:%M) UTC) — ออกเลย"
+            echo "go=no" >> "$GITHUB_OUTPUT"; exit 0
+          elif [ $(( (WINDOW_END - NOW) / 60 )) -gt "$MAX_JOB_MIN" ]; then
+            # เริ่มตอนนี้ = งานจะโดนฆ่าก่อนถึงขั้นตอน commit → ข้อมูลทั้งวันหาย
+            echo "ยังเช้าเกินไป (เหลืออีก $(( (WINDOW_END - NOW) / 60 )) นาทีถึงปิดหน้าต่าง"
+            echo " ซึ่งเกินที่ job เดียวรับไหว) — ปล่อยให้ cron ชั้นถัดไปรับไป"
+            echo "go=no" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          {
+            echo "go=yes"
+            echo "observe_from=$OBSERVE_FROM"
+            echo "trade_from=$TRADE_FROM"
+            echo "window_end=$WINDOW_END"
+          } >> "$GITHUB_OUTPUT"
+          echo "จะทำงาน: สังเกตตั้งแต่ $(date -u -d "@$OBSERVE_FROM" +%H:%M)"\
+               "· เต็มรูปแบบตั้งแต่ $(date -u -d "@$TRADE_FROM" +%H:%M)"\
+               "· ปิดหน้าต่าง $(date -u -d "@$WINDOW_END" +%H:%M) UTC"
+
       - name: Install dependencies
+        if: steps.plan.outputs.go == 'yes'
         run: |
           python -m pip install --upgrade pip
           pip install streamlit numpy pandas scipy plotly requests yfinance
 
       - name: Restore gate state
+        if: steps.plan.outputs.go == 'yes'
         uses: actions/cache/restore@v6
         with:
           path: .gate-state.json
@@ -77,6 +144,7 @@ jobs:
           restore-keys: gate-state-
 
       - name: Poll every 15 minutes until the window closes
+        if: steps.plan.outputs.go == 'yes'
         env:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
@@ -86,29 +154,21 @@ jobs:
           SYMBOLS:   ${{ inputs.symbols || 'QQQ' }}
           GATE_STATE_FILE: .gate-state.json
           FLAGS: ${{ inputs.always_send == true && ' ' || '--armed-only --only-on-change' }}
-          RUN_MINUTES: ${{ inputs.minutes || '350' }}
-          # กดเองพร้อม always_send = ข้ามช่วงสังเกต ให้ทำงานเต็มตั้งแต่รอบแรก
-          TRADE_FROM_HHMM: ${{ inputs.always_send == true && '00:00' || '14:18' }}
-          # ห้ามเริ่มประเมินก่อนเวลานี้ — กันกรณี cron มาตรงเวลาแล้วเผารันเนอร์ทิ้งก่อนตลาดเปิด
-          OBSERVE_FROM_HHMM: ${{ inputs.always_send == true && '00:00' || '13:28' }}
+          RUN_MINUTES:  ${{ inputs.minutes || '350' }}
+          OBSERVE_FROM: ${{ steps.plan.outputs.observe_from }}
+          TRADE_FROM:   ${{ steps.plan.outputs.trade_from }}
+          WINDOW_END:   ${{ steps.plan.outputs.window_end }}
         run: |
           set -u
-          WINDOW_END=$(date -u -d "18:35" +%s)          # ปิดหน้าต่าง 14:35 ET
-          TRADE_FROM=$(date -u -d "$TRADE_FROM_HHMM" +%s)  # ก่อนเวลานี้ = สังเกตอย่างเดียว
-          OBSERVE_FROM=$(date -u -d "$OBSERVE_FROM_HHMM" +%s)
           HARD_STOP=$(( $(date -u +%s) + RUN_MINUTES * 60 ))
           END=$(( WINDOW_END < HARD_STOP ? WINDOW_END : HARD_STOP ))
 
-          if [ "$(date -u +%s)" -ge "$END" ]; then
-            echo "หน้าต่างปิดไปแล้ว (ตอนนี้ $(date -u +%H:%M) UTC) — ออกเลย ไม่ต้องทำอะไร"
-            exit 0
-          fi
-
-          # cron ตั้งเผื่อดีเลย์ไว้ ถ้าวันไหนมาตรงเวลาจริงก็นอนรอถึงเวลาที่ตั้งใจ
-          # เช็ค END ด้วย ไม่งั้นตอนทดสอบ minutes=1 จะนอนข้ามเวลาจบไปเลย
+          # cron มาก่อนระฆังเปิดก็นอนรอ — เช็ค END ด้วย ไม่งั้นตอนทดสอบ minutes=1
+          # จะนอนข้ามเวลาจบไปเลย
           now=$(date -u +%s)
           if [ "$now" -lt "$OBSERVE_FROM" ] && [ "$OBSERVE_FROM" -lt "$END" ]; then
-            echo "มาก่อนเวลา — นอนรอถึง $OBSERVE_FROM_HHMM UTC อีก $(( (OBSERVE_FROM - now) / 60 )) นาที"
+            echo "มาก่อนเวลา — นอนรอถึง $(date -u -d "@$OBSERVE_FROM" +%H:%M) UTC"\
+                 "อีก $(( (OBSERVE_FROM - now) / 60 )) นาที"
             sleep $(( OBSERVE_FROM - now ))
           fi
 
@@ -124,16 +184,31 @@ jobs:
           n=0
           while :; do
             n=$((n + 1))
-            echo "───── รอบที่ $n · $(date -u +%H:%M:%S) UTC ─────"
+            now=$(date -u +%s)
+            # ก่อน TRADE_FROM = บันทึกอย่างเดียว ไม่ส่งเมล ไม่เปิดไม้
+            if [ "$now" -lt "$TRADE_FROM" ]; then
+              phase="สังเกต"; mode="--log-only"
+            else
+              phase="เต็มรูปแบบ"; mode="$FLAGS"
+            fi
+            echo "───── รอบที่ $n · $(date -u +%H:%M:%S) UTC · $phase ─────"
 
             # || true ทุกคำสั่ง — รอบเดียวพังต้องไม่ทำให้ลูปทั้งวันตาย
-            python send_report.py --no-cme $FLAGS || echo "!! send_report พังรอบนี้ ข้ามไป"
-            # สองระบบเดินคู่กัน คนละ ledger — วันหนึ่งจะมีอย่างมากอันเดียวที่ ARMED
-            # (fade ต้องการราคาในโซน · breakout ต้องการนอกโซน) เรียกทั้งคู่ทุกรอบได้เลย
-            python run_forward_test.py record --system fade \
-              || echo "!! record fade พังรอบนี้ ข้ามไป"
-            python run_forward_test.py record --system breakout \
-              || echo "!! record breakout พังรอบนี้ ข้ามไป"
+            python send_report.py --no-cme $mode || echo "!! send_report พังรอบนี้ ข้ามไป"
+
+            # เก็บ option 0DTE ทุก strike — ต้องทำทุกรอบรวมช่วงสังเกต
+            # เพราะชั่วโมงแรกคือช่วงที่ flow เปลี่ยนเร็วที่สุด
+            python zero_dte_cli.py record --symbols "$SYMBOLS" \
+              || echo "!! บันทึก 0DTE รอบนี้ไม่สำเร็จ ข้ามไป"
+
+            if [ "$now" -ge "$TRADE_FROM" ]; then
+              # สองระบบเดินคู่กัน คนละ ledger — วันหนึ่งจะมีอย่างมากอันเดียวที่ ARMED
+              # (fade ต้องการราคาในโซน · breakout ต้องการนอกโซน) เรียกทั้งคู่ทุกรอบได้เลย
+              python run_forward_test.py record --system fade \
+                || echo "!! record fade พังรอบนี้ ข้ามไป"
+              python run_forward_test.py record --system breakout \
+                || echo "!! record breakout พังรอบนี้ ข้ามไป"
+            fi
 
             now=$(date -u +%s)
             [ "$now" -ge "$END" ] && break
@@ -145,18 +220,18 @@ jobs:
           echo "จบ — เช็คไปทั้งหมด $n รอบ"
 
       - name: Save gate state
-        if: always()
+        if: always() && steps.plan.outputs.go == 'yes'
         uses: actions/cache/save@v6
         with:
           path: .gate-state.json
           key: gate-state-${{ github.run_id }}
 
       - name: Commit forward test ledger
-        if: always()
+        if: always() && steps.plan.outputs.go == 'yes'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add forward_test/ 2>/dev/null || true
+          git add forward_test/ zero_dte/ 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "ข้อมูลไม่เปลี่ยน — ไม่ต้อง commit"
             exit 0
@@ -175,7 +250,7 @@ jobs:
             git fetch origin "${GITHUB_REF_NAME}" || { sleep $((i * 5)); continue; }
             git reset --hard "origin/${GITHUB_REF_NAME}"   # ปลอดภัย: ข้อมูลอยู่ใน $STASH แล้ว
             python merge_data.py --merge "$STASH"
-            git add forward_test/ 2>/dev/null || true
+            git add forward_test/ zero_dte/ 2>/dev/null || true
             if git diff --cached --quiet; then
               echo "หลังรวมแล้วไม่มีอะไรใหม่ (อีกงานบันทึกไปแล้ว) — ไม่ต้อง push"
               pushed="yes"; break

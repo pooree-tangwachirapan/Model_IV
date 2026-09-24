@@ -64,6 +64,16 @@ at = _run("long_tab", "render_long_tab", ROOT, {"error": "ไม่มีข้�
 check("long_tab ไม่ล่มเมื่อไม่มี chain ใน session", not [e.value for e in at.exception],
       f"ได้ {[e.value for e in at.exception]}")
 
+print("\n=== [ZDTE] แท็บ 0DTE — render ได้โดยไม่ยิงเน็ต ===")
+# แท็บนี้ไม่กิน snapshot แต่ยังต้องอยู่ในชุดนี้ตามกฎ §6.6:
+# แท็บไหนโยน exception = Streamlit หยุดทั้ง script แล้วแท็บที่อยู่หลังไม่ถูก render เลย
+# สำคัญเป็นพิเศษเพราะแท็บนี้อยู่ก่อน IV Surface / GEX / CME ในลำดับ st.tabs()
+at = _run("zero_dte_tab", "render_zero_dte_tab", ROOT, ERR_SNAP)
+exc = [e.value for e in at.exception]
+check("zero_dte_tab ไม่โยน exception ตอนยังไม่มีข้อมูลสักวัน", not exc, f"ได้ {exc}")
+check("zero_dte_tab ไม่ยิง CBOE ตอน render (ต้องกดปุ่มเท่านั้น)",
+      not [e.value for e in at.error], f"error box: {[e.value for e in at.error]}")
+
 print("\n" + "="*70)
 print(f"สรุป: {'ผ่านหมด' if not FAIL else str(len(FAIL))+' รายการไม่ผ่าน'}")
 for f in FAIL: print(f"  - {f}")

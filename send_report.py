@@ -364,6 +364,9 @@ def main() -> int:
                          "— กันเมลซ้ำตอน ARMED ค้างอยู่หลายรอบ")
     ap.add_argument("--state-file", default=os.environ.get("GATE_STATE_FILE", ""),
                     help="ไฟล์ JSON เก็บ verdict ล่าสุดต่อ symbol")
+    ap.add_argument("--label", default=os.environ.get("MAIL_LABEL", ""),
+                    help="ข้อความนำหน้าหัวเรื่อง เช่น 'ก่อนเปิด 30 นาที' — "
+                         "ใช้แยกเมลรอบเช้ากับรอบเปิดตลาดออกจากกันในกล่องจดหมาย")
     ap.add_argument("--cot-markets",
                     default=os.environ.get("COT_MARKETS", "NASDAQ-100 (รวม),VIX Futures"),
                     help="ตลาด COT คั่นด้วย , (ดูรายชื่อใน cme_reports.COT_MARKETS)")
@@ -536,8 +539,16 @@ def main() -> int:
             sys_tag = ("" if top["verdict"] == "STAND_DOWN"
                        else f" [{top.get('system', 'fade').upper()}]")
             lead = f"{icon} {GATE_WORD[top['verdict']]}{sys_tag} {top['symbol']} · "
-    subject = (f"{tag}{lead}{head['symbol']} ${head['spot']:,.2f} · "
-               f"Signal Recap {', '.join(syms)} · {datetime.now():%d %b %H:%M}")
+    # เวลาในหัวเรื่องเป็น ET เสมอ — เดิมใช้ datetime.now() ซึ่งบน runner คือ UTC
+    # ทำให้เมลที่ส่งตอน 09:00 ET ขึ้นหัวว่า 13:00 แล้วอ่านผิดว่าส่งสาย
+    try:
+        import market_clock as _mc
+        _stamp = f"{_mc.et_now():%d %b %H:%M} ET"
+    except Exception:                                    # noqa: BLE001
+        _stamp = f"{datetime.now():%d %b %H:%M}"
+    _label = f"[{args.label}] " if args.label else ""
+    subject = (f"{tag}{_label}{lead}{head['symbol']} ${head['spot']:,.2f} · "
+               f"Signal Recap {', '.join(syms)} · {_stamp}")
 
     if args.dry_run:
         with open("preview.html", "w", encoding="utf-8") as f:

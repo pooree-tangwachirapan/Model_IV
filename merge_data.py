@@ -12,6 +12,7 @@ merge_data.py — รวมไฟล์ข้อมูลของเราเ�
     ไฟล์พวกนี้เป็น "ชุด record ที่มี key" — รวมได้แบบไม่มีทางขัดกัน
         ledger*.json   → key = trade id   · ไม้ที่ปิดแล้วชนะไม้ที่ยังเปิด
         log/*.jsonl    → key = (ts, sym, sys) · ซ้ำก็ทิ้งตัวหลัง
+        zero_dte/*.csv → key = (ts_utc, strike, cp) · ซ้ำก็ทิ้งตัวหลัง
 
 ลำดับที่ workflow ต้องทำ:
     python merge_data.py --save  "$TMP"   # เก็บของที่เราเพิ่งเขียน
@@ -33,21 +34,52 @@ import sys
 import forward_test as ft
 import predictions as pr
 
-DATA_DIR = "forward_test"
+# โฟลเดอร์ข้อมูลทั้งหมดที่ workflow เขียนแล้ว commit กลับ
+# **ทุก path ในไฟล์นี้อิง cwd เสมอ ห้ามอิงที่อยู่ของไฟล์ .py**
+# เพราะ workflow รันจากรากรีโป และชุดทดสอบ chdir ไปโฟลเดอร์ชั่วคราว
+# ถ้าอิงที่อยู่ไฟล์ .py เทสต์จะเขียนทับข้อมูลจริงของรีโป (พลาดมาแล้วตอนเพิ่ม zero_dte)
+DATA_DIRS = ["forward_test", "zero_dte"]
+DATA_DIR = DATA_DIRS[0]                       # คงชื่อเดิมไว้ให้ของเก่าที่ import ยังใช้ได้
+ZDTE_DIR = DATA_DIRS[1]
 LEDGERS = [cfg["ledger"] for cfg in ft.SYSTEMS.values()]
 
 
 def _rel(path: str) -> str:
-    return os.path.relpath(path, DATA_DIR).replace("\\", "/")
+    """
+    path เทียบ cwd — **เก็บชื่อโฟลเดอร์บนสุดไว้ด้วย** (forward_test/… หรือ zero_dte/…)
+
+    ของเดิมตัด `forward_test/` ทิ้งเพราะมีโฟลเดอร์ข้อมูลเดียว พอเพิ่ม zero_dte
+    แล้วยังตัดอยู่ ไฟล์สองโฟลเดอร์จะชนกันใน stash และ merge จะวางผิดที่
+    """
+    if os.path.isabs(path):
+        return os.path.relpath(path, os.getcwd()).replace("\\", "/")
+    return path.replace("\\", "/")
+
+
+def _zdte_files() -> list[str]:
+    """CSV 0DTE ทุกวัน/ทุกคลัง — ไล่ดูเองจาก cwd ไม่ใช้ z.ZDTE_DIR ซึ่งเป็น path สัมบูรณ์"""
+    out: list[str] = []
+    if not os.path.isdir(ZDTE_DIR):
+        return out
+    for sym in sorted(os.listdir(ZDTE_DIR)):
+        d = os.path.join(ZDTE_DIR, sym)
+        if not os.path.isdir(d):
+            continue
+        out += [os.path.join(d, f) for f in sorted(os.listdir(d))
+                if f.endswith(".csv") or f.endswith(".csv.gz")]
+    return out
 
 
 def _data_files() -> list[str]:
-    """ไฟล์ข้อมูลทั้งหมดที่ workflow อาจเขียน — ledger ทุกระบบ + log ทุกเดือน"""
+    """
+    ไฟล์ข้อมูลทั้งหมดที่ workflow อาจเขียน
+    — ledger ทุกระบบ + log ทุกเดือน + CSV 0DTE ทุกวัน/ทุกคลัง
+    """
     out = [p for p in LEDGERS if os.path.exists(p)]
     if os.path.isdir(pr.LOG_DIR):
         out += [os.path.join(pr.LOG_DIR, f)
                 for f in sorted(os.listdir(pr.LOG_DIR)) if f.endswith(".jsonl")]
-    return out
+    return out + _zdte_files()
 
 
 def save(dest: str) -> int:
@@ -79,6 +111,35 @@ def _merge_log(mine_path: str, repo_path: str) -> int:
     return pr.append(pr.load(mine_path), repo_path)
 
 
+def _merge_csv(mine_path: str, repo_path: str) -> int:
+    """
+    รวม CSV ของ 0DTE — key = (ts_utc, strike, cp)
+
+    สองงาน (daily-report กับ armed-alert) เขียนไฟล์วันเดียวกันได้ ถ้าปล่อยให้ git
+    รวมเองจะชนแบบเดียวกับที่ log เคยชนตอน run #33 — ต่างกันแค่เป็นไฟล์ CSV
+    """
+    import pandas as pd
+
+    mine = pd.read_csv(mine_path)
+    if mine.empty:
+        return 0
+    if os.path.exists(repo_path):
+        theirs = pd.read_csv(repo_path)
+    else:
+        theirs = pd.DataFrame(columns=mine.columns)
+
+    before = len(theirs)
+    key = [c for c in ("day", "ts_utc", "strike", "cp") if c in mine.columns]
+    both = (pd.concat([theirs, mine], ignore_index=True)
+              .drop_duplicates(subset=key or None)
+              .sort_values([c for c in ("ts_utc", "cp", "strike") if c in mine.columns]))
+
+    os.makedirs(os.path.dirname(repo_path) or ".", exist_ok=True)
+    both.to_csv(repo_path, index=False, lineterminator="\n",
+                compression="gzip" if repo_path.endswith(".gz") else None)
+    return len(both) - before
+
+
 def merge(src: str) -> int:
     """
     รวมของที่ --save ไว้ เข้ากับไฟล์ที่อยู่ในรีโปตอนนี้ (= เวอร์ชันของ remote)
@@ -93,13 +154,15 @@ def merge(src: str) -> int:
         for f in files:
             mine_path = os.path.join(root, f)
             rel = os.path.relpath(mine_path, src).replace("\\", "/")
-            repo_path = os.path.join(DATA_DIR, rel)
+            repo_path = rel                       # อิง cwd เหมือนตอน --save
             os.makedirs(os.path.dirname(repo_path) or ".", exist_ok=True)
             try:
                 if f.endswith(".jsonl"):
                     added = _merge_log(mine_path, repo_path)
                 elif f.endswith(".json"):
                     added = _merge_ledger(mine_path, repo_path)
+                elif f.endswith(".csv") or f.endswith(".csv.gz"):
+                    added = _merge_csv(mine_path, repo_path)
                 else:
                     continue
             except Exception as e:                       # noqa: BLE001

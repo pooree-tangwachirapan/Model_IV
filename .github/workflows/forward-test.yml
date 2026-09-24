@@ -8,8 +8,12 @@ name: Forward Test (resolve + monthly report)
 
 on:
   schedule:
-    - cron: "10 21 * * 1-5"    # 17:10 ET — หลังตลาดปิด ปิดไม้ประจำวัน
-    - cron: "30 21 1 * *"      # วันที่ 1 ของเดือน — รายงานเดือนที่แล้ว
+    # GitHub ยิงสายได้หลายชั่วโมง (วัดได้ 220-590 นาที ดู daily-report.yml)
+    # งานนี้ทนความสายได้เพราะแค่ต้อง "หลังตลาดปิด" ไม่ต้องตรงนาที
+    # แต่ตั้งไว้ 2 ชั้น เผื่อชั้นแรกโดนทิ้ง — ชั้นที่สองเห็นว่าทำไปแล้วก็ไม่มีอะไรเปลี่ยน
+    - cron: "11 21 * * 1-5"    # 17:11 ET — หลังตลาดปิด ปิดไม้ประจำวัน
+    - cron: "41 23 * * 1-5"    # สำรอง
+    - cron: "31 21 1 * *"      # วันที่ 1 ของเดือน — รายงานเดือนที่แล้ว + รวบ CSV 0DTE
   workflow_dispatch:
     inputs:
       month:
@@ -45,6 +49,12 @@ jobs:
         run: |
           python run_forward_test.py resolve --system fade
           python run_forward_test.py resolve --system breakout
+
+      # รวบ CSV 0DTE ของเดือนที่จบแล้วเป็นคลัง .csv.gz (ดูเหตุผลใน zero_dte.py)
+      # ไม่ทำแบบนี้ repo จะโตปีละ ~200 MB · rollup ข้ามเดือนปัจจุบันให้เอง
+      - name: Roll up finished months of 0DTE data
+        run: |
+          python zero_dte_cli.py rollup || echo "!! รวบ 0DTE ไม่สำเร็จ — ข้ามไป ข้อมูลยังอยู่ครบ"
 
       - name: Commit ledger
         run: |

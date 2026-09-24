@@ -1,0 +1,10 @@
+# ไฟล์ข้อมูลที่ทั้ง Windows (เครื่อง Pooree) และ Linux (GitHub runner) เขียนต่อท้าย
+# ต้องเป็น LF ทั้งคู่ ไม่งั้นฝั่ง Windows จะ checkout เป็น CRLF แล้ว Python ต่อท้ายด้วย LF
+# → ไฟล์เดียวมี line ending ปนกัน และ diff บวมทั้งไฟล์ทุกครั้งที่สลับเครื่องเขียน
+zero_dte/**/*.csv      text eol=lf
+forward_test/**/*.json  text eol=lf
+forward_test/**/*.jsonl text eol=lf
+long_premium/**/*.jsonl text eol=lf
+
+# คลังรายเดือนเป็น binary — อย่าให้ git ไปยุ่งกับ byte ข้างใน
+zero_dte/**/*.csv.gz   binary
