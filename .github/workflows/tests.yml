@@ -7,6 +7,7 @@ on:
     branches: [main]
     paths-ignore:
       - "forward_test/**"
+      - "zero_dte/**"          # CSV ที่ workflow เก็บทุก 15 นาที ไม่ใช่โค้ด
       - "**.md"
   pull_request:
   workflow_dispatch:
