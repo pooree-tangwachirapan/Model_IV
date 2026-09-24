@@ -83,8 +83,15 @@ def cmd_rollup(a) -> int:
         if todo is None:
             # เดือนที่ยังมีไฟล์รายวันอยู่ ยกเว้นเดือนปัจจุบัน
             days = z.available_days(sym)
-            todo = sorted({d[:7] for d in days
-                           if os.path.exists(z.path_for(sym, d))} - {this_month})
+            open_months = {d[:7] for d in days if os.path.exists(z.path_for(sym, d))}
+            todo = sorted(open_months - {this_month})
+            if not todo:
+                # ต้องพิมพ์เสมอ — งานที่เงียบตอนไม่ทำอะไร แยกไม่ออกจากงานที่พัง
+                # (บทเรียนซ้ำของโปรเจกต์นี้: "สำเร็จ" ไม่เท่ากับ "ได้ทำ")
+                print(f"  {sym}: ยังไม่มีเดือนที่จบแล้วให้รวบ"
+                      + (f" (มีไฟล์รายวันของ {', '.join(sorted(open_months))}"
+                         f" · เดือนปัจจุบัน {this_month} ยังไม่รวบ)" if open_months
+                         else " — ยังไม่มีข้อมูลเลย"))
         for m in todo:
             if m == this_month and not a.force:
                 print(f"  ข้าม {sym} {m} — เดือนนี้ยังไม่จบ (ใส่ --force ถ้าต้องการ)")
