@@ -1,0 +1,146 @@
+name: 0DTE Recorder (external trigger)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# บันทึก option 0DTE ทุก strike หนึ่งครั้งต่อการกด — คนกดคือ cron-job.org ทุก 15 นาที
+# วิธีตั้งค่าฝั่ง cron-job.org: SETUP_CRON_JOB.md
+#
+# ทำไมไม่ใช้ cron ของ GitHub (วัดจริง 24 ก.ย. – 16 ต.ค. 2026 · HANDOFF §6.16):
+#   armed-alert ตั้ง cron ไว้ 26 ชั้น/วัน แต่ GitHub ยิงจริงแค่ 2 ชั้น/วัน
+#   ชั้นแรกมาเช้าเกินจนต้องออก ชั้นที่สองมา 10:45–17:50 ET
+#   → ได้ 1–21 snapshot/วัน จาก 26 · 5 ใน 17 วันได้แค่ 10:00 ET จุดเดียว
+#   และ armed-alert ปิดหน้าต่างที่ 14:35 ET โดยออกแบบ → ไม่เคยมีข้อมูลชั่วโมงครึ่งสุดท้าย
+#
+# workflow_dispatch ที่ถูกสั่งผ่าน API เริ่มทันที (ใน log: createdAt = startedAt)
+# จึงให้นาฬิกาภายนอกเป็นคนกด แล้วงานนี้ทำรอบเดียวจบ ไม่ต้องนอนรอ
+#
+# งานนี้ตัดสินเองว่าควรบันทึกไหม (market_clock.py) — นาฬิกาภายนอกยิงเกินมาก็ไม่เสียหาย:
+#   วันหยุด/เสาร์อาทิตย์ → ออก · ก่อน open−2 นาที หรือหลัง close+20 นาที → ออก
+#   +20 นาทีเพราะ quote ของ CBOE ดีเลย์ ~15 นาที → snapshot 16:15 ET คือราคาตอนปิดตลาด
+#   วันปิดครึ่งวัน (13:00 ET) close มาจาก market_clock เอง
+# ═══════════════════════════════════════════════════════════════════════════
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Symbols คั่นด้วย , (เช่น QQQ,SPY)"
+        required: false
+        default: "QQQ"
+      force:
+        description: "บันทึกแม้อยู่นอกเวลาตลาด (ไว้ทดสอบ — ปกติไม่ต้องติ๊ก)"
+        type: boolean
+        default: false
+
+# ต่อคิว ไม่ยกเลิก — แต่ละงาน ~1–2 นาที สั้นกว่ารอบ 15 นาทีมาก คิวไม่ควรค้าง
+# (และไม่ต้องกันงานซ้ำแบบ §6.11 — บันทึกซ้ำ merge_data ตัดทิ้งด้วย key ให้เอง)
+concurrency:
+  group: zero-dte-record
+  cancel-in-progress: false
+
+permissions:
+  contents: write          # commit CSV กลับเข้ารีโป
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # ── ตัดสินก่อนลง dependency (market_clock ใช้แต่ stdlib) ──────────
+      - name: Check the window
+        id: plan
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -u
+          python market_clock.py info
+          if [ "$FORCE" = "true" ]; then
+            echo "กดเองพร้อม force — ข้ามด่านเวลา"
+            { echo "go=yes"; echo "flag=--force"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$(python market_clock.py trading)" != "1" ]; then
+            echo "วันนี้ตลาดไม่เปิด — ไม่บันทึก"
+            echo "go=no" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          OPEN=$(python market_clock.py epoch --slot open)
+          CLOSE=$(python market_clock.py epoch --slot close)
+          FROM=$((  OPEN  -  2 * 60 ))
+          UNTIL=$(( CLOSE + 20 * 60 ))
+          NOW=$(date -u +%s)
+          if [ "$NOW" -lt "$FROM" ] || [ "$NOW" -gt "$UNTIL" ]; then
+            echo "นอกหน้าต่างบันทึก (ตอนนี้ $(TZ=America/New_York date +%H:%M) ET ·"\
+                 "หน้าต่าง $(TZ=America/New_York date -d "@$FROM" +%H:%M)–$(TZ=America/New_York date -d "@$UNTIL" +%H:%M) ET) — ไม่บันทึก"
+            echo "go=no" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          { echo "go=yes"; echo "flag="; } >> "$GITHUB_OUTPUT"
+          echo "บันทึกรอบ $(TZ=America/New_York date +%H:%M) ET"
+
+      - name: Install dependencies
+        if: steps.plan.outputs.go == 'yes'
+        run: |
+          python -m pip install --upgrade pip
+          pip install streamlit numpy pandas scipy plotly requests yfinance
+
+      - name: Record 0DTE snapshot
+        if: steps.plan.outputs.go == 'yes'
+        env:
+          SYMBOLS: ${{ inputs.symbols || 'QQQ' }}
+          FLAG: ${{ steps.plan.outputs.flag }}
+        run: |
+          # --strict = คืน 1 เมื่อดึงไม่สำเร็จ → แปลงเป็น warning (เห็นในหน้า run แต่ไม่ส่งเมลแดงทุก 15 นาที)
+          python zero_dte_cli.py record --symbols "$SYMBOLS" --strict $FLAG \
+            || echo "::warning::บันทึก 0DTE รอบนี้ไม่สำเร็จ — ดู log ข้างบน"
+
+      - name: Commit snapshot
+        if: steps.plan.outputs.go == 'yes'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # เก็บ **เฉพาะไฟล์ที่รอบนี้แก้** ไม่ใช้ `merge_data.py --save`
+          # เพราะ --save ก็อปไฟล์ .csv.gz ของเดือนที่จบแล้วไปด้วย แล้ว merge เขียนมันใหม่
+          # (gzip ฝังเวลาไว้ในหัวไฟล์) → commit ไฟล์ 288 KB ที่เนื้อหาไม่เปลี่ยนทุกรอบ
+          STASH=$(mktemp -d)
+          n=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            mkdir -p "$STASH/$(dirname "$f")"
+            cp "$f" "$STASH/$f"
+            n=$((n + 1))
+            echo "  เก็บ $f"
+          done < <(git ls-files --modified --others --exclude-standard -- zero_dte)
+          if [ "$n" -eq 0 ]; then
+            echo "ไม่มีข้อมูลใหม่ — ไม่ต้อง commit"
+            exit 0
+          fi
+
+          # รวมระดับ record แบบเดียวกับ armed-alert (§6.5) · ทุกอย่างที่แก้ไฟล์อยู่หลัง reset (§6.14)
+          pushed=""
+          for i in 1 2 3 4 5; do
+            git fetch origin "${GITHUB_REF_NAME}" || { sleep $((i * 5)); continue; }
+            git reset --hard "origin/${GITHUB_REF_NAME}"   # ปลอดภัย: ของเราอยู่ใน $STASH แล้ว
+            python merge_data.py --merge "$STASH"
+            if [ -d zero_dte ]; then git add -A -- zero_dte; fi
+            if git diff --cached --quiet; then
+              echo "หลังรวมแล้วไม่มีอะไรใหม่ — ไม่ต้อง push"
+              pushed="yes"; break
+            fi
+            git commit -q -m "0DTE: snapshot $(TZ=America/New_York date +%H:%M) ET [skip ci]"
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then pushed="yes"; break; fi
+            echo "push รอบ $i ไม่สำเร็จ — ดึงของใหม่แล้วรวมอีกครั้ง"
+            sleep $((i * 5))
+          done
+          rm -rf "$STASH"
+
+          if [ -z "$pushed" ]; then
+            echo "::error::push ข้อมูล 0DTE ไม่สำเร็จหลังลอง 5 รอบ"
+            exit 1
+          fi

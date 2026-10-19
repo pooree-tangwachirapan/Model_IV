@@ -30,7 +30,9 @@ def check(name, cond, detail=""):
 
 TMP = tempfile.mkdtemp(prefix="mailstate-")
 F = os.path.join(TMP, ".mail-sent.json")
-TODAY = date(2026, 9, 25)
+# ต้องเป็นวันนี้จริง — save() ตัดวันที่เก่ากว่า KEEP_DAYS โดยนับจากนาฬิกาจริง
+# ของเดิมตรึงไว้ 25 ก.ย. 2026 → พอผ่านไป 10 วัน mark แล้วถูกตัดทิ้งทันที เทสต์ล้มเอง (19 ต.ค. 2026)
+TODAY = mc.today_et()
 
 try:
     print("=== พื้นฐาน ===")
@@ -41,7 +43,7 @@ try:
     check("slot อื่นของวันเดียวกันยังส่งได้",
           not ms.already_sent("open30", TODAY, F))
     check("slot เดียวกันของวันอื่นยังส่งได้",
-          not ms.already_sent("premarket", date(2026, 9, 28), F))
+          not ms.already_sent("premarket", TODAY + timedelta(days=1), F))
 
     print("\n=== mark ซ้ำต้องไม่บวมและไม่เปลี่ยนคำตอบ ===")
     ms.mark("premarket", TODAY, F)

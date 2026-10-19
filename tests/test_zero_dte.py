@@ -247,8 +247,15 @@ try:
     check("คืน ok=False พร้อมเหตุผล", out["ok"] is False and "CBOE" in out["error"], str(out))
     out = z.record("QQQ", fetch=lambda s: (pd.DataFrame(), 0.0))
     check("chain ว่าง → ok=False ไม่ crash", out["ok"] is False, str(out))
-    out = z.record("QQQ", fetch=lambda s: (fake_chain(), 740.0),
-                   ts=TS + timedelta(minutes=45))
+    # record() ไม่รับ today — build_rows ถามนาฬิกาจริงว่าวันนี้ expiry ไหน
+    # ของเดิมผ่านเฉพาะช่วงที่วันจริงตรงกับ expiry ใน fake_chain (ล้มเองตั้งแต่ 29 ก.ย. 2026)
+    _real_today = z.mc.today_et
+    z.mc.today_et = lambda: TODAY
+    try:
+        out = z.record("QQQ", fetch=lambda s: (fake_chain(), 740.0),
+                       ts=TS + timedelta(minutes=45))
+    finally:
+        z.mc.today_et = _real_today
     check("fetch ปกติ → บันทึกได้", out["ok"] and out["written"] > 0, str(out))
 
     print("\n=== รายงาน HTML ===")
