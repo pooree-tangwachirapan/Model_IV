@@ -85,14 +85,14 @@
   "qty": 100,
   "risk_usd": 404.0,
   "spot_at_signal": 688.22,
-  "status": "open",
+  "status": "loss",
   "filled_at": "2026-10-30T17:55:00+00:00",
   "fill_price": 687.46,
-  "closed_date": null,
-  "closed_at": null,
-  "exit": null,
-  "realized_r": null,
-  "pnl_usd": null,
+  "closed_date": "2026-11-02",
+  "closed_at": "2026-11-02T14:30:00+00:00",
+  "exit": 692.26,
+  "realized_r": -1.0,
+  "pnl_usd": -480.0,
   "note": ""
  }
 ]
