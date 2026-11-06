@@ -48,7 +48,7 @@ check("ด่านเวลาอยู่ก่อน pip install",
       0 <= Y.find("- name: Check the window") < Y.find("pip install"))
 check("ถาม market_clock ว่าวันนี้ตลาดเปิดไหม (วันหยุด/DST)", "market_clock.py trading" in plan)
 m_until = re.search(r"UNTIL=\$\(\(\s*CLOSE\s*\+\s*(\d+)\s*\*\s*60", plan)
-check("หน้าต่างปิดหลังตลาดปิด ≥ 15 นาที (quote ดีเลย์ ~15 นาที → ได้ราคาปิด)",
+check("หน้าต่างปิดหลังตลาดปิด ≥ 15 นาที (quote ดีเลย์ ~15 นาที → ได้ภาพช่วงปิดตลาด)",
       m_until is not None and int(m_until.group(1)) >= 15,
       m_until.group(0) if m_until else "ไม่พบ UNTIL")
 m_from = re.search(r"FROM=\$\(\(\s*OPEN\s*-\s*(\d+)\s*\*\s*60", plan)
@@ -61,6 +61,30 @@ rec = step("Record 0DTE snapshot")
 check("step บันทึกมีเงื่อนไข go == 'yes'", "steps.plan.outputs.go == 'yes'" in rec)
 check("เรียก zero_dte_cli.py record", "zero_dte_cli.py record" in rec)
 check("ดึงไม่สำเร็จ → warning ไม่ใช่เงียบ", "::warning::" in rec and "--strict" in rec)
+
+print("=== บริบท VIX (step แยก ห้ามทำให้ chain พังหรือช้า) ===")
+ctx = step("Record context (VIX family)")
+check("มี step บริบท VIX", bool(ctx))
+i_rec = Y.find("- name: Record 0DTE snapshot")
+i_ctx = Y.find("- name: Record context (VIX family)")
+i_com = Y.find("- name: Commit snapshot")
+check("ลำดับ: บันทึก chain → บริบท → commit (chain อยู่บนดิสก์ก่อนแตะเน็ตรอบสอง)",
+      0 <= i_rec < i_ctx < i_com)
+check("step บริบทมีเงื่อนไข go == 'yes'", "steps.plan.outputs.go == 'yes'" in ctx)
+check("continue-on-error: true — step นี้ล้มแล้ว job ยังไป commit chain",
+      re.search(r"continue-on-error:\s*true", ctx) is not None)
+m_tmo = re.search(r"timeout-minutes:\s*(\d+)", ctx)
+check("timeout-minutes ของ step ≤ 5", m_tmo is not None and int(m_tmo.group(1)) <= 5)
+check("ครอบด้วย `timeout` ของ shell (กัน DNS ค้างที่ requests จับไม่ได้)",
+      re.search(r"\btimeout\s+(?:-k\s+\d+\s+)?\d+\s+python zero_dte_cli\.py context", ctx)
+      is not None)
+check("ล้ม → ::warning:: ไม่ใช่ error", "::warning::" in ctx and "::error::" not in ctx)
+check("step บันทึก chain ไม่ถูกแก้ให้ไปดึงบริบทด้วย", "context" not in rec)
+
+import zero_dte_ctx as _zc                                    # noqa: E402
+_rel = os.path.relpath(_zc.ctx_path("QQQ", "2026-11-06"), ROOT).replace("\\", "/")
+check("ไฟล์บริบทอยู่ใต้ zero_dte/ (pathspec ของ step commit ครอบ) แต่ไม่อยู่ตรง zero_dte/<SYM>/",
+      _rel == "zero_dte/QQQ/ctx/2026-11-06.csv", _rel)
 
 print("=== commit ===")
 com = step("Commit snapshot")

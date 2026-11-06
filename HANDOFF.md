@@ -1,6 +1,6 @@
 # HANDOFF — อ่านไฟล์นี้ก่อนเริ่มงานกับ Model_IV
 
-เอกสารส่งต่อระหว่าง session · อัปเดตล่าสุด 2026-09-25
+เอกสารส่งต่อระหว่าง session · อัปเดตล่าสุด 2026-11-06
 
 เขียนไว้เพราะบทเรียนส่วนใหญ่ในโปรเจกต์นี้**มองไม่เห็นจากการอ่านโค้ด** —
 มันคือสิ่งที่รู้ได้ตอนของพังเท่านั้น ถ้าไม่จดไว้ session ถัดไปจะพลาดซ้ำ
@@ -11,7 +11,7 @@
 
 เครื่องมือวิเคราะห์ options QQQ ของ Pooree · repo public
 [github.com/pooree-tangwachirapan/Model_IV](https://github.com/pooree-tangwachirapan/Model_IV)
-· clone อยู่ที่ `Desktop\Cluade_Code\Model_IV`
+· clone อยู่ที่ `Desktop\Cluade_Code\Investor\Model_IV` (path เก่า `Cluade_Code\Model_IV` ไม่มีแล้ว)
 
 เริ่มจากแอป Streamlit ดู IV Surface แล้วโตเป็น: แดชบอร์ด GEX → ประตูตัดสินใจ 2 ระบบ
 → forward test อัตโนมัติ → บันทึกทุกการตัดสิน → เมลรายวัน
@@ -83,8 +83,9 @@
 | ไฟล์ | บทบาท | มี UI |
 |---|---|---|
 | `zero_dte.py` | เก็บ/อ่าน option 0DTE ทุก strike · rollup รายเดือน | ไม่ |
+| `zero_dte_ctx.py` | บริบทต่อ snapshot: VIX · VIX1D · VIX9D · VVIX (Yahoo) — เพิ่ม 06.11.2026 | ไม่ |
 | `zero_dte_report.py` | ประกอบรายงาน HTML (6 กราฟ + ตาราง) | ไม่ |
-| `zero_dte_cli.py` | CLI: record / report / days / summary / rollup | ไม่ |
+| `zero_dte_cli.py` | CLI: record / context / report / days / summary / rollup | ไม่ |
 | `zero_dte_tab.py` | หน้าจอแท็บที่ 5 | ใช่ |
 
 **มันแก้ปัญหาอะไร:** §4 เขียนว่า CBOE ให้ **snapshot ปัจจุบันเท่านั้น ไม่มีย้อนหลัง**
@@ -96,12 +97,32 @@
 
 **รูปแบบข้อมูล:**
 ```
-zero_dte/<SYM>/<YYYY-MM-DD>.csv     วันที่ยังใช้งาน · ~840 KB/วัน (26 snapshot)
-zero_dte/<SYM>/<YYYY-MM>.csv.gz     เดือนที่จบแล้ว · บีบ ~4.6 เท่า
+zero_dte/<SYM>/<YYYY-MM-DD>.csv      วันที่ยังใช้งาน · ~840 KB/วัน (26 snapshot)
+zero_dte/<SYM>/<YYYY-MM>.csv.gz      เดือนที่จบแล้ว · บีบ ~4.6 เท่า
+zero_dte/<SYM>/ctx/<YYYY-MM-DD>.csv  บริบทต่อ snapshot (VIX ตระกูล) · ~6 KB/วัน · ไม่ rollup
 ```
 **ไม่เก็บ .gz ระหว่างวันโดยตั้งใจ** — ไฟล์ที่ต่อท้ายแล้ว commit ทุกวัน ถ้าเป็น gzip
 git จะเก็บ blob ใหม่ทั้งก้อนทุกครั้ง delta ไม่ได้ · เดือนที่จบแล้วไม่ถูกต่อท้ายอีกจึงบีบได้
 ไม่ทำ rollup repo จะโตปีละ ~200 MB
+
+**ไฟล์บริบท `ctx/` (เพิ่ม 06.11.2026 — หลังวันที่ QQQ −6.49% ซึ่ง VIX1D เป็นตัวอ่านสดที่มีประโยชน์ที่สุดตัวหนึ่ง แต่ไม่มีใครเก็บไว้)**
+หนึ่งแถวต่อ snapshot: `ts_utc` (สตริงเดียวกับใน chain → join ตรงตัว) · `spot` ของ chain · `fetched_utc`
+· `vix vix1d vix9d vvix` แต่ละตัวมี `<ชื่อ>_utc` = **เวลาของ quote** · `src`
+- **อยู่ในโฟลเดอร์ย่อยโดยตั้งใจ** — `quantlab/options_data.py` (ทั้งอ่านในเครื่องและ list ผ่าน GitHub API)
+  กับ `merge_data._zdte_files()` หยิบ**ทุก** `.csv` ที่อยู่ตรง `zero_dte/<SYM>/` · ถ้าวาง `<day>_ctx.csv`
+  ข้าง chain จะถูกอ่านเป็น chain · รันตัวอ่านจริงของ QuantLab กับโฟลเดอร์ที่มี `ctx/` แล้ว ได้แถวเท่าไฟล์ chain ล้วน
+  · schema ของ chain ไม่เปลี่ยน (`test_zero_dte_ctx.py` ล็อกไว้ทั้งสองเรื่อง)
+- แหล่ง = **Yahoo v8 chart** (`^VIX1D` interval=1m range=1d · UA เบราว์เซอร์) เลือกหลังวัด 06.11.2026:
+  Yahoo มีแท่ง 1m ของ VIX1D วันที่ 5 พ.ย. ครบ 390/390 · CBOE `quotes/_VIX1D.json` ให้ค่าเดียว high/low = 0
+  และ `last_trade_time` ของ `_VIX` ค้างที่ 16:15 ของเมื่อวานขณะที่ราคาขยับตาม GTH ไปแล้ว (ใช้เป็นเวลา quote ไม่ได้)
+  · CBOE `charts/intraday/_VIX1D.json` OHLC ตรงกับ Yahoo ทุกแท่ง แต่**ป้ายเวลาต่างกัน 1 นาที**
+  (CBOE ติดป้ายด้วยนาทีที่แท่งจบ · Yahoo ใช้นาทีที่แท่งเริ่ม) และแท่งแรกเป็น 0 — ระวังตอนเอาสองเจ้ามาเทียบ
+- `^VIX` ของ Yahoo **ช้าราว 15 นาที** (06.11 ดึงตอน 08:50:37 UTC ได้ quote เวลา 08:35:31) ใกล้กับดีเลย์ของ chain
+  ตัวอื่นยังไม่ได้วัดตอนตลาดเปิด → ดู `fetched_utc − *_utc` ในไฟล์วันแรก · **เทียบเวลาด้วย `*_utc` ไม่ใช่ด้วยแถว**
+- เป็น step แยกใน `zero-dte-record.yml` **หลัง** chain ลงดิสก์แล้ว · ดึงไม่ได้สักตัว = ไม่เขียนอะไร
+  · ได้บางตัว = เขียนพร้อมช่องว่าง · ไม่มี snapshot ของ chain ในรอบนั้น (< 5 นาที) = ไม่ยิงเน็ตเลย
+  · เพดานเวลา 3 ชั้น (20 วินาทีในโค้ด · `timeout 45` · step 2 นาที + `continue-on-error`)
+- workflow อื่น (armed-alert / daily-report / forward-test) **ไม่เขียน ctx** — รอบที่ cron-job.org ไม่ยิง = ไม่มีบริบท
 
 **ข้อจำกัดที่ต้องรู้:**
 - CBOE ดีเลย์ ~15 นาที → ค่าที่ติดป้าย 10:00 คือภาพราว 09:45 **ห้ามใช้วัด reaction ระดับนาที**
@@ -146,6 +167,7 @@ d ≤ (TARGET_EM_MULT − MIN_PLAN_R × STOP_EM_FRAC) / (1 + MIN_PLAN_R)
 |---|---|---|
 | chain + greeks ครบ (delta/gamma/vega/theta/rho) + OI + IV | **CBOE delayed** | ฟรี unlimited · ช้า ~15 นาที · **snapshot ปัจจุบันเท่านั้น ไม่มีย้อนหลัง** |
 | VIX/VVIX · realized vol · futures | yfinance | ฟรี |
+| VIX · VIX1D · VIX9D · VVIX ระหว่างวัน | Yahoo v8 chart ตรง (UA เบราว์เซอร์ — UA ปกติได้ 429) | `^VIX` ช้า ~15 นาที · เก็บลง `zero_dte/<SYM>/ctx/` (§2 แท็บ 0DTE) |
 | COT | CFTC public API | รายสัปดาห์ · **ช้า 3 วันเสมอ** |
 | SOFR/EFFR | NY Fed API | ทางการ |
 | GEX/DEX/VEX/Vanna/Charm/Pin | คำนวณเอง | หน่วยเป็น convention เราเอง |
@@ -169,7 +191,7 @@ FedWatch / QuikStrike / Daily Volume Report / Term SOFR **จะไม่ดึ�
 | `daily-report.yml` | เมล 2 รอบ: **09:00 ET** (ก่อนเปิด 30 นาที) + **10:00 ET** (เปิดแล้ว 30 นาที) + log + 0DTE | บันได 6 ชั้น จ–ศ |
 | `armed-alert.yml` | ลูปในตัวงาน เช็คทุก 15 นาที · เปิดไม้ 2 ระบบ · บันทึก 0DTE | บันได 16 ชั้น จ–ศ |
 | `forward-test.yml` | ปิดไม้ + รายงานรายเดือน + รวบ CSV 0DTE | หลังตลาดปิด |
-| `zero-dte-record.yml` | บันทึก 0DTE รอบเดียวจบ · ด่านเวลา open−2 ถึง close+20 นาที | **cron-job.org กดผ่าน API ทุก 15 นาที** (ไม่มี cron ของ GitHub · ตั้งค่าตาม `SETUP_CRON_JOB.md`) |
+| `zero-dte-record.yml` | บันทึก 0DTE รอบเดียวจบ + บริบท VIX (step แยก ล้มไม่กระทบ chain) · ด่านเวลา open−2 ถึง close+20 นาที | **cron-job.org กดผ่าน API ทุก 15 นาที** (ไม่มี cron ของ GitHub · ตั้งค่าตาม `SETUP_CRON_JOB.md`) |
 
 **ลูปอยู่ในตัวงาน ไม่ใช่ cron 17 รอบ** — GitHub **ทิ้งรอบ** ไม่ใช่แค่ดีเลย์
 (ตั้ง 17 รอบ ยิงจริง 5) ให้ cron ยิงครั้งเดียวแล้วงานนอนรอเองทุก 15 นาที
@@ -470,7 +492,21 @@ git ตรวจ pathspec ทั้งชุดก่อนทำงาน เ�
 
 **ผลวันแรก 19 ต.ค. 2026 (cron-job.org):** run 28/28 ตรงเวลา (เริ่ม :07–:13 วินาที หลังนาทีที่ตั้ง · งานละ ~40 วินาที
 ซึ่ง 25 วินาทีเป็น pip install) · ไฟล์วันนั้นมี 35 snapshot (รวมของ daily-report + armed-alert) · key ไม่ซ้ำ
-· snapshot 16:15 ET มี spot 718.345 เทียบกับราคาปิดจริง 718.32 → **ได้ราคาปิดจริงเป็นครั้งแรก**
+· ได้ snapshot ช่วงปิดตลาด (16:15 ET) เป็นครั้งแรก
+
+⚠️ **snapshot 16:15 ET ใกล้ราคาปิด แต่ไม่ใช่ราคาปิด** (แก้ 06.11.2026 — เดิมเขียนว่า "ได้ราคาปิดจริง" ซึ่งผิด)
+
+| วัน | spot ใน snapshot 16:15 ET | ราคาปิดทางการ (แท่งรายวัน Yahoo) | ต่าง |
+|---|---|---|---|
+| 19 ต.ค. | 718.345 | 718.36 | −0.015 |
+| 4 พ.ย. | 692.45 | 691.95 | +0.50 |
+| 5 พ.ย. | 647.90 | 647.05 | +0.85 |
+
+ราคาปิดทางการคือราคาจาก **closing auction** (closing cross 16:00 ET) — Yahoo 1m วันที่ 5 พ.ย.
+แท่ง 15:59 ปิด 647.77 แล้วมีจุด 16:00 แยกออกมาที่ 647.05 volume 0 = ราคา auction
+ส่วน `spot` ใน chain คือ `current_price` ของ CBOE ซึ่งดีเลย์ ~15 นาที **และยังขยับนอกเวลาทำการ**
+(06.11 03:22 ET อ่านได้ 651.16 ขณะที่ `close` = 647.05) → ห้ามใช้ snapshot 16:15 แทนราคาปิด
+อยากได้ราคาปิดให้เอาจากแท่งรายวัน หรือ field `close` ของ CBOE `quotes/QQQ.json`
 
 ⚠️ **snapshot ก่อน 10:00 ET ใช้ไม่ได้** — วัดดีเลย์ของ CBOE จาก spot เทียบกับแท่ง 1 นาที ได้ค่ากลาง **15–16 นาที**
 - 09:30 ET = กระดานของ**วันก่อน**ทั้งชุด (201 แถว · volume รวมเท่ากับ snapshot 09:00 ทุกหลัก)
@@ -485,7 +521,12 @@ python run_tests.py            # ทุกชุด · exit 1 ถ้าพัง
 python run_tests.py snapshot   # เฉพาะชุดที่ชื่อมีคำนี้
 ```
 
-14 ชุด **482 เคส** ใน `tests/` · CI รันทุก push · ใช้ known-answer ไม่ใช่แค่ "ไม่ crash"
+15 ชุด **535 เคส** ใน `tests/` · CI รันทุก push · ใช้ known-answer ไม่ใช่แค่ "ไม่ crash"
+
+06.11.2026 เพิ่ม `test_zero_dte_ctx.py` (44 เคส) + 9 เคสใน `test_zero_dte_workflow.py` — ล็อก 4 เรื่องของบริบท VIX:
+ดึงไม่ได้ = ไม่เขียนและไม่โยน exception · ไฟล์ ctx ไม่โผล่ในที่ที่ตัวอ่าน chain มองหา · schema ของ chain ไม่เปลี่ยน
+· `merge_data._merge_csv` เขียนไฟล์ ctx ใหม่แล้วไบต์ไม่เปลี่ยน (ไม่งั้น diff ปลอมทุก 15 นาที)
+ลองแก้โค้ดให้ผิดแล้ว (วาง ctx ข้าง chain · ถอด `continue-on-error`) เทสต์ล้มจริง 5 + 1 เคส — ไม่ใช่เทสต์ที่ผ่านเสมอ
 
 ⚠️ **เทสต์ที่ตรึงวันที่แต่โค้ดถามนาฬิกาจริง = ระเบิดเวลา** (เจอ 19 ต.ค. 2026 ตอน CI ไม่ได้รันมาตั้งแต่ 24 ก.ย.)
 `test_mail_state` ตรึง 25 ก.ย. แต่ `save()` ตัดวันที่เก่ากว่า 10 วันจากนาฬิกาจริง ·
@@ -569,7 +610,7 @@ python run_tests.py snapshot   # เฉพาะชุดที่ชื่อ�
 ## 10. คำสั่งที่ใช้บ่อย
 
 ```bash
-python run_tests.py                                    # เทสต์ทั้งหมด (397 เคส)
+python run_tests.py                                    # เทสต์ทั้งหมด (535 เคส)
 python run_tests.py ui_error                           # เฉพาะชุดที่กันแอปล่ม (§6.6)
 grep -rn "\[LP\]" --include=*.py .                     # จุดที่แท็บ Long Premium แตะโค้ดเดิม
 python send_report.py --dry-run                        # ดูเมลโดยไม่ส่ง (ได้ preview.html)
@@ -583,6 +624,7 @@ gh workflow run "Armed Alert (intraday)" -f minutes=1          # ทดสอบ
 python market_clock.py info                            # วันนี้ตลาดเปิดไหม · slot กี่โมง
 python market_clock.py trading --date 2026-11-26       # 1=เปิด 0=ปิด
 python zero_dte_cli.py record                          # เก็บ 0DTE เดี๋ยวนี้
+python zero_dte_cli.py context                         # VIX ตระกูลของ snapshot ล่าสุด (ต้องมี snapshot อายุ < 5 นาที)
 python zero_dte_cli.py summary                         # สรุปวันล่าสุด
 python zero_dte_cli.py report --day 2026-09-25         # ทำรายงาน HTML
 python zero_dte_cli.py rollup                          # รวบเดือนที่จบแล้ว

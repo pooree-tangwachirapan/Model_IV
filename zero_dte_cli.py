@@ -8,10 +8,12 @@ zero_dte_cli.py — สั่งงานตัวบันทึก 0DTE จา
     python zero_dte_cli.py days                        # วันที่มีข้อมูลแล้ว
     python zero_dte_cli.py rollup                      # รวบเดือนที่จบแล้วเป็น .csv.gz
     python zero_dte_cli.py summary --day 2026-09-25    # สรุปหนึ่งวันเป็นข้อความ
+    python zero_dte_cli.py context                     # VIX/VIX1D/VIX9D/VVIX ของ snapshot ล่าสุด
 
 exit code: 0 = สำเร็จ · 1 = ล้มเหลว
 `record` จะ **ไม่** คืน 1 เมื่ออยู่นอกเวลาทำการ (ไม่ใช่ความผิดพลาด) นอกจากใส่ --strict
 เพราะลูปใน workflow เรียกทุก 15 นาที ถ้าคืน 1 ตอนตลาดปิดจะมี annotation แดงเปล่า ๆ ทุกวัน
+`context` ก็เหมือนกัน: คืน 1 เฉพาะตอนใส่ --strict แล้วได้ดัชนีไม่ครบ/ไม่ได้เลย
 """
 
 from __future__ import annotations
@@ -145,10 +147,40 @@ def cmd_summary(a) -> int:
     return 0
 
 
+def cmd_context(a) -> int:
+    """
+    บันทึก VIX · VIX1D · VIX9D · VVIX ผูกกับ snapshot ล่าสุดของ chain (zero_dte_ctx.py)
+
+    workflow เรียกเป็น step แยก *หลัง* `record` — chain อยู่บนดิสก์แล้ว คำสั่งนี้พังยังไงก็ไม่กระทบ
+    """
+    import zero_dte_ctx as zc
+
+    syms = [s.strip().upper() for s in a.symbols.split(",") if s.strip()]
+    r = zc.record(syms)
+    for key, (v, t) in sorted(r.get("values", {}).items()):
+        print(f"  {key.upper():<6} {v:>8.2f}  (quote {_et_hms(t)} ET)")
+    for key, msg in sorted(r.get("errors", {}).items()):
+        print(f"  !! {key.upper()}: {msg}", file=sys.stderr)
+    for res in r.get("results", []):
+        print(f"  {res['sym']}: " + (f"เขียนบริบท → {res['path']}" if res.get("written")
+                                     else res.get("reason", "")))
+    bad = (not r.get("ok")) or bool(r.get("errors"))
+    return 1 if (bad and a.strict) else 0
+
+
+def _et_hms(iso_utc: str | None) -> str:
+    """'2026-11-05T21:15:01+00:00' → '16:15:01' (เวลา ET) · อ่านไม่ได้ → '?'"""
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(iso_utc).astimezone(mc.ET).strftime("%H:%M:%S")
+    except (TypeError, ValueError):
+        return "?"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="ตัวบันทึก/รายงาน option 0DTE")
     ap.add_argument("cmd",
-                    choices=["record", "report", "days", "summary", "rollup"])
+                    choices=["record", "report", "days", "summary", "rollup", "context"])
     ap.add_argument("--symbols", default="QQQ", help="คั่นด้วย , (ค่าตั้งต้น QQQ)")
     ap.add_argument("--day", default="", help="YYYY-MM-DD (ว่าง = วันล่าสุดที่มีข้อมูล)")
     ap.add_argument("--out", default="", help="path ไฟล์รายงาน")
@@ -167,7 +199,8 @@ def main() -> int:
     a.month = a.month or None
 
     return {"record": cmd_record, "report": cmd_report, "days": cmd_days,
-            "summary": cmd_summary, "rollup": cmd_rollup}[a.cmd](a)
+            "summary": cmd_summary, "rollup": cmd_rollup,
+            "context": cmd_context}[a.cmd](a)
 
 
 if __name__ == "__main__":

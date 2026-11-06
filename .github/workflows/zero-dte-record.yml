@@ -15,8 +15,12 @@ name: 0DTE Recorder (external trigger)
 #
 # งานนี้ตัดสินเองว่าควรบันทึกไหม (market_clock.py) — นาฬิกาภายนอกยิงเกินมาก็ไม่เสียหาย:
 #   วันหยุด/เสาร์อาทิตย์ → ออก · ก่อน open−2 นาที หรือหลัง close+20 นาที → ออก
-#   +20 นาทีเพราะ quote ของ CBOE ดีเลย์ ~15 นาที → snapshot 16:15 ET คือราคาตอนปิดตลาด
+#   +20 นาทีเพราะ quote ของ CBOE ดีเลย์ ~15 นาที → snapshot 16:15 ET ≈ ภาพช่วงปิดตลาด
+#   (ใกล้แต่ไม่เท่าราคาปิดทางการ ซึ่งคือราคา closing auction — HANDOFF §6.16)
 #   วันปิดครึ่งวัน (13:00 ET) close มาจาก market_clock เอง
+#
+# หลังบันทึก chain มี step บริบท VIX · VIX1D · VIX9D · VVIX (zero_dte_ctx.py) แยกต่างหาก
+# ดึงไม่ได้ = ไม่เขียนอะไรเพิ่ม · step นั้นพัง/ค้างก็ไม่กระทบ chain (continue-on-error + timeout)
 # ═══════════════════════════════════════════════════════════════════════════
 
 on:
@@ -98,6 +102,23 @@ jobs:
           # --strict = คืน 1 เมื่อดึงไม่สำเร็จ → แปลงเป็น warning (เห็นในหน้า run แต่ไม่ส่งเมลแดงทุก 15 นาที)
           python zero_dte_cli.py record --symbols "$SYMBOLS" --strict $FLAG \
             || echo "::warning::บันทึก 0DTE รอบนี้ไม่สำเร็จ — ดู log ข้างบน"
+
+      # ── บริบทของ snapshot: VIX · VIX1D · VIX9D · VVIX (zero_dte_ctx.py) ──────────
+      # step แยกโดยตั้งใจ — chain เขียนลงดิสก์เสร็จตั้งแต่ step ก่อนแล้ว step นี้จะพัง ค้าง
+      # หรือดึงไม่ได้ ก็ไม่แตะ chain: ไม่เขียนอะไรเพิ่ม + warning แล้วไป commit ตามปกติ
+      # เพดานเวลา 3 ชั้น: DEADLINE_S ในโค้ด · `timeout` ของ shell (กัน DNS ค้าง ซึ่ง timeout
+      # ของ requests ไม่ครอบ) · timeout-minutes + continue-on-error ของ step เป็นชั้นสุดท้าย
+      # ไฟล์ลง zero_dte/<SYM>/ctx/ — `git ls-files … -- zero_dte` กับ `git add -A -- zero_dte`
+      # ของ step commit ครอบอยู่แล้ว ไม่ต้องแก้ step นั้น
+      - name: Record context (VIX family)
+        if: steps.plan.outputs.go == 'yes'
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          SYMBOLS: ${{ inputs.symbols || 'QQQ' }}
+        run: |
+          timeout -k 5 45 python zero_dte_cli.py context --symbols "$SYMBOLS" --strict \
+            || echo "::warning::บริบท VIX รอบนี้ได้ไม่ครบหรือไม่ได้เลย — chain ไม่กระทบ (ดู log ข้างบน)"
 
       - name: Commit snapshot
         if: steps.plan.outputs.go == 'yes'
