@@ -163,3 +163,31 @@ token นี้แตะได้แค่เรื่อง Actions ของ M
 - `daily-report.yml` ยังบันทึกตอน 09:00 และ 10:00 ET
 - ช่วงที่ตัวบันทึกทำงานซ้อนกัน ข้อมูลจะถี่ขึ้น ซึ่งไม่เสียหาย เพราะ `merge_data.py` ตัดแถวซ้ำด้วย key `(ts_utc, strike, cp)`
 - เมื่อยืนยันแล้วว่าตัวใหม่เก็บได้ครบวัน ค่อยตัดสินว่าจะเอาการบันทึกออกจาก armed-alert หรือไม่
+
+---
+
+## เพิ่ม 06.11.2026: ให้ cron-job.org ปลุก Armed Alert ด้วย (job ที่สอง · 3 นาที)
+
+**ทำไม:** job แรกปลุกแค่ตัวบันทึก 0DTE ซึ่งเก็บครบ 28/28 ในวันที่ 5 พ.ย. แต่ **ตัวตัดสิน fade / breakout (`armed-alert.yml`) ยังใช้ cron ของ GitHub**
+- 4 และ 5 พ.ย. GitHub ปลุกมันตอน 08:04 ET (เช้าเกิน งานจะยาวเกิน timeout → ออก) กับ 15:38 ET (หน้าต่างปิดแล้ว → ออก)
+- วันที่ QQQ ลง 6.5% จึงไม่มีการประเมินเลยหลัง 10:00 ET (มีแค่ daily-report 09:00 / 10:00)
+- หลังเลิกเวลาฤดูร้อน (1 พ.ย.) บันได cron 05:07–14:37 UTC เหลือขั้นที่ใช้ได้แค่ 14:07 กับ 14:37 UTC — แทบไม่มีโอกาสโดน
+
+**ปลุกวันละครั้งพอ** — งานนี้ออกแบบให้รันยาวในงานเดียว: เริ่มแล้วนอนรอถึง 09:28 ET แล้วประเมินทุก 15 นาทีจนถึง 14:35 ET เอง
+
+ใน cron-job.org กด **Create cronjob** (หรือ **Clone** job แรกแล้วแก้ 3 ช่องนี้):
+
+| ช่อง | ใส่ |
+|---|---|
+| Title | `Model_IV armed-alert` |
+| URL | `https://api.github.com/repos/pooree-tangwachirapan/Model_IV/actions/workflows/armed-alert.yml/dispatches` |
+| Execution schedule | Custom · **Monday – Friday** · Hours **9** · Minutes **25** (crontab `25 9 * * 1-5`) |
+| Time zone | **`America/New_York`** |
+
+แท็บ Advanced / Headers / Notifications **เหมือน job แรกทุกช่อง** (POST · body `{"ref":"main"}` · 5 headers) — **ใช้ token ตัวเดิมได้** (สิทธิ์ Actions ของ Model_IV ครอบทุก workflow ในรีโป)
+
+ทดสอบ: **TEST RUN** ต้องได้ 204 → หน้า Actions มี run ใหม่ชื่อ **Armed Alert (intraday)**
+- ทดสอบตอนตลาดปิด log จะบอก "วันนี้ตลาดไม่เปิด" หรือ "หน้าต่างปิดไปแล้ว" ถือว่าปกติ
+- คืนแรกที่ตลาดเปิด (เวลาไทย 21:25): run ควรอยู่ค้างจนถึง ~02:35 น. และ `forward_test/log/<เดือน>.jsonl` เพิ่มทุก 15 นาที
+
+cron ของ GitHub ใน `armed-alert.yml` ยังอยู่ ไม่ต้องลบ — ถ้ามันมาตอน job นี้รันอยู่ `concurrency` จะต่อคิวไว้ แล้วออกเองเมื่อหน้าต่างปิด
