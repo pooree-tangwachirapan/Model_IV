@@ -10,15 +10,17 @@ def check(name, cond, detail=""):
     print(f"  {'PASS' if cond else 'FAIL'}  {name}" + (f"  — {detail}" if detail and not cond else ""))
     if not cond: FAIL.append(name)
 
-def snap(spot, pw, cw, flip, net, em=5.0):
+def snap(spot, pw, cw, flip, net, em=5.0, session=None):
     return {'symbol':'QQQ','spot':spot,'asof':datetime.now(),'max_pain':None,
             'levels':{'put_wall':pw,'call_wall':cw,'flip':flip,'net':net,
                       'call_wall_oi':cw,'put_wall_oi':pw},
             'expected_move':{'em':em},'term':{'slope_pct':-5.0,'state':'backwardation'},
-            'rows':[{'label':'0DTE share','value':'10.0% of |GEX|'}]}
+            'rows':[{'label':'0DTE share','value':'10.0% of |GEX|'}],
+            'session':session}
 
 print("=== 1. breakout ARMED ต้องโผล่ในเมล พร้อมป้ายระบบ ===")
-s = snap(731.5, 700, 730, 720, -2e9)          # ทะลุขึ้นสด · −GEX · เหนือ flip
+# ทะลุขึ้นสด · −GEX · เหนือ flip · วันนี้เคยลงถึง 725 (ในโซน) แล้วขึ้นข้าม 730 = ข้ามมาจริง (§6.17)
+s = snap(731.5, 700, 730, 720, -2e9, session={'high': 731.8, 'low': 725.0, 'prev_close': 726.0})
 bg = breakout.evaluate(s); bg.setdefault("system", "breakout")
 fg = gate.evaluate(s);     fg.setdefault("system", "fade")
 check("breakout = ARMED", bg["verdict"] == "ARMED", f"ได้ {bg['verdict']} — {bg['reason']}")

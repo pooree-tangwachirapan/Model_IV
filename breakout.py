@@ -6,6 +6,7 @@ breakout.py — ประตูสำหรับไม้ "ไล่ตาม�
     gate.py (fade)      ต้องการ +GEX · ราคาอยู่ในโซน · ห่าง flip · โซนกว้าง
                         → เดิมพันว่ากำแพง "ถือ" ราคาถูกดูดกลับ
     breakout.py         ต้องการ −GEX หรือกำแพงแตกแล้ว · ราคาอยู่นอกโซน · ใกล้/ต่ำกว่า flip
+                        · และราคาต้อง "ข้ามกำแพงออกมาจากในโซน" ตั้งแต่ปิดวันก่อน (ดู crossing())
                         → เดิมพันว่ากำแพง "แตก" แล้ววิ่งต่อ
 
 สองระบบนี้ **ห้าม ARMED พร้อมกัน** — ถ้าเกิดขึ้นแปลว่าตรรกะขัดกันเอง มี assert กันไว้
@@ -82,10 +83,105 @@ def _fmt_usd(x):
     return f"{x:+,.0f}"
 
 
-def breach_state(spot, put_wall, call_wall, em=None) -> dict | None:
+CROSS_GATE = "ข้ามกำแพงมาจากในโซน"
+CROSS_NOTE = ("หลุด Put Wall ต้องเคยอยู่ ≥ กำแพงตั้งแต่ปิดวันก่อน · ทะลุ Call Wall ต้องเคยอยู่ ≤ กำแพง — "
+              "ไม่เคยเลย = ราคาไม่ได้ทะลุอะไร: GEX ดึงกำแพงเข้าหาราคาจนย้ายข้ามราคาไปเอง "
+              "หรือทะลุไปตั้งแต่ก่อนปิดวันก่อน (เคสจริง 9 พ.ย. 2026 · HANDOFF §6.17)")
+_MISSING_TH = {"high": "high ของวัน", "low": "low ของวัน", "prev_close": "ราคาปิดวันก่อน"}
+
+
+def _px(v) -> float | None:
+    """ราคาที่ใช้ได้ = ตัวเลขบวกจำกัด · CBOE ส่ง 0 มาได้ตอนยังไม่มีเทรด · snapshot เก่าไม่มี field นี้"""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if 0 < x < float("inf") else None
+
+
+def crossing(direction: str, wall: float, session: dict | None) -> dict:
+    """
+    ราคา "ข้ามกำแพงออกมาจากในโซน" จริงไหม — ช่วงที่ดู = ตั้งแต่ราคาปิดวันก่อนจนถึง snapshot นี้
+
+        หลุด Put Wall  (DOWN)  นับเมื่อ  prev_close ≥ wall  หรือ  high ของวันนี้ ≥ wall
+        ทะลุ Call Wall (UP)    นับเมื่อ  prev_close ≤ wall  หรือ  low ของวันนี้ ≤ wall
+
+    ราคาเคยอยู่ฝั่งในของกำแพง (แตะพอดีก็นับ — โซนรวมขอบ ตรงกับ breach_state) แล้วตอนนี้อยู่นอก
+    → ราคาเดินต่อเนื่อง ระหว่างนั้นต้องข้ามกำแพงไปในทิศของการทะลุแน่นอน
+    ไม่เคยเลย = ราคาไม่ได้ทะลุอะไร: กำแพงย้ายข้ามราคาไปเอง หรือทะลุไปตั้งแต่ก่อนปิดวันก่อน
+
+    ทำไมต้องมี (เคสจริง 9 พ.ย. 2026 · HANDOFF §6.17): เดิม breach_state ดูแค่ "ตอนนี้อยู่นอกกำแพงไหม
+    + ห่างกี่ ×EM" — Put Wall แบบ GEX (γ×OI) ถูกดึงเข้าหา ATM ตอนราคาขึ้นไปหา strike ใหญ่
+    จึงกระโดด 650 → 680 ขึ้นไปอยู่**เหนือ**ราคา 670 ขณะที่ QQQ ขึ้นทั้งวัน แล้วระบบอ่าน "ราคาต่ำกว่า
+    Put Wall" ว่าเป็นการหลุดลงสด → ARMED SHORT 9 ครั้งตอนราคาวิ่งขึ้นเข้าหากำแพงจากข้างล่าง
+    (high จนถึงครั้งสุดท้ายตามแท่ง 1 นาทีคือ 678.85 · ปิดวันก่อน 656.10 — ไม่เคยแตะ 680)
+
+    ทำไม lookback = "ตั้งแต่ปิดวันก่อน": EM ที่ใช้วัดหน้าต่าง "ทะลุสด" เป็นของ expiry ใกล้สุด
+    (QQQ = 0DTE ของวันนี้) หน้าต่างนี้จึงเป็นเรื่องของ session เดียว · นับ prev_close ด้วย
+    เพราะ gap ข้ามกำแพงตอนเปิดก็คือการข้ามจริง (12 ต.ค. 2026 ARMED แบบนี้ — ปิด 751.27 เปิดใต้ 750)
+
+    ทำไมใช้ high/low ของ CBOE ไม่ใช่ "รอบประเมินก่อน":
+      · มาใน response เดียวกับ spot → ดีเลย์เท่ากัน และหน้าจอกับเมล/ledger ตัดสินตรงกัน
+        (รอบก่อนมีแต่ใน log ของ workflow — แอปไม่มี · record กับ send_report ดึงคนละ snapshot)
+      · high/low คือเส้นทางราคาต่อเนื่อง — รอบประเมินเป็นแค่จุดห่างกัน 15 นาทีที่หายได้ทั้งรอบ (§6.16)
+        และ lookback รอบเดียวจะตัดการทะลุแบบค่อย ๆ (แหย่ <0.10×EM ก่อนแล้วค่อยเข้าหน้าต่าง) ทิ้งหมด
+
+    ข้อจำกัดที่รู้: ก่อนกระดานของวันใหม่มา (~09:45 ET) high/low ยังเป็นของวันก่อน → ช่วงที่ดูยืดไปถึง
+    ต้นวันก่อน (เห็นจริง 10 พ.ย. 04:xx ET: ยืนยันด้วย high 682.48 ของ 9 พ.ย.) · ไม่ถึง ledger เพราะ
+    armed-alert เปิดไม้ตั้งแต่เปิดตลาด +48 นาที แต่โผล่ในเมล 09:00 ET + log — ค่าประตูจึงบอกวันของ high/low
+    (§6.16 ก็ห้ามใช้ snapshot ก่อน 10:00 อยู่แล้ว)
+    · high/low ไม่บอกลำดับเวลา จึงแยก "ทะลุแล้ววิ่งเลยหน้าต่างไปแล้วเด้งกลับมาหากำแพง" ไม่ออก
+
+    คืน dict: crossed = True / False / None (ยืนยันไม่ได้: ขาดข้อมูลบางตัว และตัวที่มีไม่ยืนยัน)
+              src / ref = ข้อมูลตัวไหนยืนยัน ที่ราคาเท่าไหร่ · missing = field ที่ไม่มี
+    ประตูนับ None เป็นไม่ผ่าน — ไม่รู้ = ไม่ไล่ (แบบเดียวกับไม่มี flip / ไม่มี EM)
+    """
+    s = session or {}
+    hi, lo, pc = _px(s.get("high")), _px(s.get("low")), _px(s.get("prev_close"))
+    down = direction == "DOWN"
+    # เช็คของวันนี้ก่อน — บอกได้มากกว่า "ปิดวันก่อนอยู่ฝั่งใน" (ซึ่งแปลว่าข้ามตอน gap หรือระหว่างวัน)
+    cands = [("high", hi) if down else ("low", lo), ("prev_close", pc)]
+    # วันของ high/low ตาม last_trade_time — โชว์ในค่าประตูให้เห็นว่ากระดานยังค้างเป็นของวันก่อนไหม
+    # ยังไม่ใช้ตัดสิน: เคยเห็น field นี้แค่ตอนก่อนเปิด (HANDOFF §6.17 · ต้องวัดระหว่างวันก่อน)
+    ltt = s.get("last_trade_time")
+    out = {"crossed": False, "src": None, "ref": None, "high": hi, "low": lo, "prev_close": pc,
+           "session_date": str(ltt)[:10] if ltt else None,
+           "missing": [k for k, v in cands if v is None]}
+    for key, v in cands:
+        if v is not None and (v >= wall if down else v <= wall):
+            out.update(crossed=True, src=key, ref=v)
+            return out
+    if out["missing"]:
+        out["crossed"] = None
+    return out
+
+
+def _cross_text(br: dict) -> str:
+    cx, w, down = br["cross"], br["wall"], br["direction"] == "DOWN"
+    f = (lambda x: f"{x:,.2f}" if x is not None else "—")
+    op = "≥" if down else "≤"
+    # ระบุวันของ high/low เมื่อรู้ — ก่อนกระดานวันใหม่มา มันคือของวันก่อน ห้ามเขียนว่า "วันนี้"
+    day = f" ({cx['session_date']})" if cx.get("session_date") else " ของวัน"
+    ext_name, ext = (f"high{day}", cx["high"]) if down else (f"low{day}", cx["low"])
+    if cx["crossed"]:
+        if cx["src"] == "prev_close":
+            return f"ปิดวันก่อน {f(cx['ref'])} {op} {w:,.2f} — ข้ามตอน gap/ระหว่างวัน"
+        return f"{ext_name} {f(cx['ref'])} {op} {w:,.2f}"
+    seen = f"ปิดวันก่อน {f(cx['prev_close'])} · {ext_name} {f(ext)}"
+    if cx["crossed"] is None:
+        miss = " / ".join(_MISSING_TH.get(k, k) for k in cx["missing"])
+        return f"ยืนยันไม่ได้ — ไม่มี {miss} ({seen})"
+    return f"ไม่เคย{'ขึ้น' if down else 'ลง'}ถึง {w:,.2f} ตั้งแต่ปิดวันก่อน ({seen})"
+
+
+def breach_state(spot, put_wall, call_wall, em=None, session=None) -> dict | None:
     """
     ราคาอยู่ตรงไหนเทียบกำแพง — คืน None ถ้ายังอยู่ในโซน (ไม่มีอะไรให้ breakout)
     ต้องมี em ถึงจะตัดสิน fresh/too_far ได้ เพราะหน้าต่างวัดเป็น ×EM
+
+    fresh / too_far / too_close วัด "ระยะตอนนี้" อย่างเดียว (เรขาคณิตของ R — ห้ามแตะ)
+    ส่วน "ราคาข้ามกำแพงมาจริงไหม" อยู่ใน crossed (ดู crossing()) — สองเรื่องนี้ต้องผ่านทั้งคู่
+    ระยะอย่างเดียวแยก "หลุดลงมา 3 จุด" ออกจาก "วิ่งขึ้นมาจนห่างกำแพง 3 จุด" ไม่ได้
     """
     if None in (spot, put_wall, call_wall) or call_wall <= put_wall:
         return None
@@ -96,10 +192,12 @@ def breach_state(spot, put_wall, call_wall, em=None) -> dict | None:
     else:
         return None
     dist_pts = abs(spot - wall)
+    cx = crossing(direction, wall, session)
     out = {
         "wall": wall, "side": side, "direction": direction,
         "dist_pts": dist_pts, "dist_pct": dist_pts / spot * 100,
         "dist_em": None, "fresh": False, "too_far": False, "too_close": False,
+        "crossed": cx["crossed"], "cross": cx,
     }
     if em:
         d = dist_pts / em
@@ -182,7 +280,8 @@ def evaluate(snap: dict) -> dict:
     pw, cw, flip = lv.get("put_wall"), lv.get("call_wall"), lv.get("flip")
     net = lv.get("net", 0.0)
     em = (snap.get("expected_move") or {}).get("em")
-    br = breach_state(S, pw, cw, em)
+    # session = high/low/ราคาปิดวันก่อน จาก response เดียวกับ spot (snapshot.session_from_quote)
+    br = breach_state(S, pw, cw, em, session=snap.get("session"))
     out["breach"] = br
 
     H = out["hard"]
@@ -214,6 +313,9 @@ def evaluate(snap: dict) -> dict:
         out["headline"] = "ยังไม่มีการทะลุ"
         out["reason"] = f"ราคาอยู่ในโซน {pw:,.2f}–{cw:,.2f} — ระบบ fade คือตัวที่ควรดู ไม่ใช่ breakout"
         return out
+
+    # อยู่นอกกำแพง ≠ ทะลุกำแพง — ต้องเคยอยู่ฝั่งในตั้งแต่ปิดวันก่อน ไม่งั้นกำแพงย้ายมาทับราคาเอง
+    H.append(_g(CROSS_GATE, br["crossed"] is True, _cross_text(br), CROSS_NOTE))
 
     if not em:
         H.append(_g("ทะลุสด ไม่ตกรถ", False, "ไม่มี Expected Move",
@@ -292,7 +394,12 @@ def evaluate(snap: dict) -> dict:
     failed = [r["label"] for r in H if not r["ok"]]
     if failed:
         out["verdict"] = "STAND_DOWN"
-        out["headline"] = "ไม่เข้าเกณฑ์ไล่ตาม"
+        # ไม่ได้ข้ามกำแพงมา = ไม่ใช่การทะลุเลย ประตูอื่นไม่มีความหมาย — บอกตรง ๆ ในหัวเรื่อง
+        if CROSS_GATE in failed:
+            out["headline"] = ("ไม่ใช่การทะลุ — ราคาไม่ได้ข้ามกำแพงมา" if br["crossed"] is False
+                               else "ยืนยันไม่ได้ว่าราคาข้ามกำแพงมา")
+        else:
+            out["headline"] = "ไม่เข้าเกณฑ์ไล่ตาม"
         out["reason"] = " · ".join(failed)
     else:
         out["verdict"] = "ARMED"

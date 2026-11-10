@@ -54,6 +54,7 @@ def to_record(g: dict, snap: dict, when: datetime | None = None) -> dict:
     """
     lv = (snap or {}).get("levels") or {}
     em = ((snap or {}).get("expected_move") or {}).get("em")
+    se = (snap or {}).get("session") or {}
     p = g.get("plan") or {}
     return {
         "ts": (when or _utc_now()).isoformat(timespec="seconds"),
@@ -73,6 +74,11 @@ def to_record(g: dict, snap: dict, when: datetime | None = None) -> dict:
             "em": em, "mp": (snap or {}).get("max_pain"),
             "iv": (snap or {}).get("atm_iv"),
         },
+        # ช่วงราคาที่ breakout ใช้ตัดสินว่า "ข้ามกำแพงมาจริงไหม" — ไม่เก็บ = ย้อนตรวจไม่ได้
+        # (9 พ.ย. 2026 ต้องประกอบ high ณ ตอนนั้นจากแท่ง Yahoo เพราะ log ไม่มี · HANDOFF §6.17)
+        # t = last_trade_time ของ CBOE — ไว้ดูทีหลังว่า high/low ตอนก่อนเปิดเป็นของวันไหน
+        "sess": ({"hi": se.get("high"), "lo": se.get("low"), "pc": se.get("prev_close"),
+                  "t": se.get("last_trade_time")} if se else None),
         # เก็บผลรายประตู เพื่อตอบทีหลังว่า "ประตูไหนเป็นตัวปิด" โดยไม่ต้องเดาจาก reason
         "gates": {r["label"]: bool(r["ok"]) for r in (g.get("hard") or [])},
         "soft": {r["label"]: bool(r["ok"]) for r in (g.get("soft") or [])},

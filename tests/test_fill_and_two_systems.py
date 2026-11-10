@@ -123,7 +123,9 @@ snap = {'symbol':'QQQ','spot':731.5,'asof':datetime.now(),'max_pain':None,
         'levels':{'put_wall':700.0,'call_wall':730.0,'flip':720.0,'net':-2e9,
                   'call_wall_oi':730.0,'put_wall_oi':700.0},
         'expected_move':{'em':5.0},'term':{'slope_pct':-5.0,'state':'backwardation'},
-        'rows':[{'label':'0DTE share','value':'10.0% of |GEX|'}]}
+        'rows':[{'label':'0DTE share','value':'10.0% of |GEX|'}],
+        # วันนี้เคยลงถึง 725 (ในโซน) แล้วขึ้นข้าม 730 — breakout ต้องเห็นการข้ามจริง (HANDOFF §6.17)
+        'session':{'high':731.8,'low':725.0,'prev_close':726.0}}
 bg = breakout.evaluate(snap)
 check("breakout ARMED ได้", bg["verdict"]=="ARMED", f"ได้ {bg['verdict']} — {bg['reason']}")
 need = ("side","ideal_entry","invalidation","target","spot")

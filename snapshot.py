@@ -52,6 +52,9 @@ def fetch_chain(sym: str, tries: int = 4):
             df = pd.DataFrame(d.get("options", []))
             S = float(d.get("current_price", 0) or 0)
             if not df.empty and S > 0:
+                # ส่ง high/low/ปิดวันก่อนของ response เดียวกันไปกับ chain โดยไม่เปลี่ยน signature
+                # (zero_dte.record กับเทสต์ที่ mock ฟังก์ชันนี้ยังรับ (df, S) เหมือนเดิม)
+                df.attrs["session"] = session_from_quote(d)
                 return df, S
             last = f"ตอบ 200 แต่ข้อมูลไม่ครบ (สัญญา {len(df)} · spot {S})"
         except Exception as e:
@@ -63,6 +66,31 @@ def fetch_chain(sym: str, tries: int = 4):
             time.sleep(wait)
     # โยน error พร้อมเหตุผล ดีกว่าคืนของว่างให้ปลายทางไปตายแบบไม่มีข้อความ
     raise RuntimeError(f"ดึง chain {sym} ไม่สำเร็จหลังลอง {tries} รอบ — ล่าสุด: {last}")
+
+
+def session_from_quote(d: dict) -> dict:
+    """
+    ช่วงราคาของวันจาก header ของ CBOE — breakout.crossing() ใช้ตัดสินว่าราคา "ข้ามกำแพงมาจริง" ไหม
+
+    มาจาก response เดียวกับ current_price จึงดีเลย์ ~15 นาทีเท่ากับ spot และ chain
+    · high/low = ของ session ปกติ — 9 พ.ย. 2026 ตรงกับแท่งรายวัน Yahoo (high 682.48 · low 662.02
+      · close 679.35) · open ต่าง 0.05 (662.69 vs 662.64)
+    · ก่อนกระดานวันใหม่มา (ก่อน ~09:45 ET) ยังเป็นของวันก่อน และ prev_day_close เลื่อนเป็นปิดของวันนั้นแล้ว
+      (เห็น 10 พ.ย. 03:54 ET: high/low ของ 9 พ.ย. · prev_day_close = close = 679.35) — HANDOFF §6.17
+    · last_trade_time — เห็นครั้งเดียว (10 พ.ย. 03:54 ET) เป็น 15:59:59 ของ 9 พ.ย. ขณะที่ current_price
+      ขยับตาม pre-market ไปแล้ว · เก็บไว้ดูว่า high/low เป็นของวันไหน — ยังไม่ได้ใช้ตัดสิน
+    ค่าที่ไม่ใช่ตัวเลขบวก → None (CBOE ส่ง 0 มาได้ เช่น quote ของ VIX1D ที่ high/low = 0)
+    """
+    def px(key):
+        try:
+            v = float(d.get(key))
+        except (TypeError, ValueError):
+            return None
+        return v if 0 < v < float("inf") else None
+
+    return {"open": px("open"), "high": px("high"), "low": px("low"),
+            "prev_close": px("prev_day_close"),
+            "last_trade_time": d.get("last_trade_time"), "src": "cboe"}
 
 
 def get_macro() -> dict:
@@ -345,6 +373,8 @@ def build_snapshot(sym: str = "QQQ", hv_ticker: str | None = None,
     raw, S = fetch_chain(sym)
     if raw.empty or not S:
         return {"error": f"ดึง chain ของ {sym} ไม่ได้", "symbol": sym}
+    # อ่านทันทีหลังดึง ก่อนแปลง DataFrame ต่อ — None = breakout ยืนยันการข้ามกำแพงไม่ได้ (ไม่ไล่)
+    session = raw.attrs.get("session")
 
     df = fa_gex.parse_cboe_for_gex(raw, S)
     if df.empty:
@@ -510,5 +540,6 @@ def build_snapshot(sym: str = "QQQ", hv_ticker: str | None = None,
         "macro": macro, "rv": rv, "atm_iv": iv_atm, "max_pain": mp,
         "expected_move": em, "skew": sk, "term": ts, "pin": pin,
         "zero_dte": z0,          # gate.py ใช้ — เดิมคำนวณแล้วโผล่แค่ใน rows
+        "session": session,      # breakout.py ใช้ — high/low/ปิดวันก่อน (ดู session_from_quote)
         "n_contracts": len(df), "error": None,
     }

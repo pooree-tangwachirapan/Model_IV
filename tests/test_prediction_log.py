@@ -58,8 +58,11 @@ snap = {'symbol':'QQQ','spot':731.5,'asof':datetime.now(),'max_pain':729.0,'atm_
         'levels':{'put_wall':700.0,'call_wall':730.0,'flip':720.0,'net':-2e9,
                   'call_wall_oi':700.0,'put_wall_oi':660.0},
         'expected_move':{'em':5.0},'term':{'slope_pct':-5.0,'state':'backwardation'},
-        'rows':[{'label':'0DTE share','value':'10.0% of |GEX|'}]}
+        'rows':[{'label':'0DTE share','value':'10.0% of |GEX|'}],
+        # วันนี้เคยลงถึง 725 (ในโซน) แล้วขึ้นข้าม 730 — breakout ต้องเห็นการข้ามจริง (HANDOFF §6.17)
+        'session':{'high':731.8,'low':725.0,'prev_close':726.0,'last_trade_time':'2026-08-20T11:00:00'}}
 bg = breakout.evaluate(snap); bg.setdefault("system", "breakout")
+check("breakout ARMED (ข้ามกำแพงมาจริง)", bg["verdict"] == "ARMED", f"ได้ {bg['verdict']} — {bg['reason']}")
 fg = gate.evaluate(snap);     fg.setdefault("system", "fade")
 for g in (fg, bg):
     r = pr.to_record(g, snap, T0)
@@ -70,6 +73,9 @@ for g in (fg, bg):
           isinstance(json.dumps(r, ensure_ascii=False), str))
 r_b = pr.to_record(bg, snap, T0)
 check("breakout ARMED เก็บแผนไว้ด้วย", r_b["plan"] is not None and r_b["plan"]["r"], f"ได้ {r_b['plan']}")
+check("เก็บ high/low/ปิดวันก่อนที่ใช้ตัดสินการข้ามกำแพง",
+      r_b.get("sess") == {"hi": 731.8, "lo": 725.0, "pc": 726.0, "t": "2026-08-20T11:00:00"},
+      f"ได้ {r_b.get('sess')}")
 r_f = pr.to_record(fg, snap, T0)
 check("fade STAND_DOWN ก็ยังเก็บผลรายประตู", len(r_f["gates"]) >= 2, f"ได้ {r_f['gates']}")
 
