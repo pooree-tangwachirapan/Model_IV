@@ -59,6 +59,22 @@ SYSTEMS = {
 DEFAULT_SYSTEM = "fade"
 LEDGER = SYSTEMS[DEFAULT_SYSTEM]["ledger"]     # คงชื่อเดิมไว้ ของเก่าเรียกอยู่
 
+# ── ไม้ที่ "เก็บไว้ แต่ไม่นับ" ──
+# ไม้ที่เปิดจากบั๊กที่ยืนยันแล้ว: ยังอยู่ใน ledger และ bot ยังปิดไม้ให้ตามปกติ (ประวัติจริงของสิ่งที่ระบบทำ)
+# แต่ stats / รายงานรายเดือน / แท็บ P&L ไม่นับ (แสดงแยกให้เห็น) และ record() ไม่ให้มันกันไม้ใหม่
+# — ไม่งั้นไม้จากบั๊กจะยืนค้างกันไม้จริงของระบบที่แก้แล้วไปจนหมดเวลาถือ
+# เก็บในโค้ด ไม่เติม field ลง ledger: ledger ถูก workflow เขียนทับ + merge ทั้งวัน (§6.4–6.5)
+# field ที่เติมมือหายได้เงียบ ๆ ถ้า job ที่ checkout ก่อนหน้านั้นเขียนกลับ
+# เพิ่มได้เฉพาะไม้จากบั๊กที่ยืนยันแล้ว พร้อมชี้หัวข้อใน HANDOFF — ห้ามใช้ซ่อนไม้แพ้ธรรมดา
+EXCLUDED_TRADES = {
+    "QQQ-20261109-162210": "เปิดจากช่องโหว่ breakout 9 พ.ย. 2026 — ราคาไม่ได้ข้ามกำแพงจริง (HANDOFF §6.17)",
+}
+
+
+def excluded(t: dict) -> str | None:
+    """เหตุผลที่ไม่นับไม้นี้ · None = นับตามปกติ"""
+    return EXCLUDED_TRADES.get(t.get("id"))
+
 
 def system_cfg(system: str = DEFAULT_SYSTEM) -> dict:
     if system not in SYSTEMS:
@@ -171,9 +187,11 @@ def record(trades: list[dict], g: dict, now: datetime | None = None,
     sym = g.get("symbol") or SYMBOL
     today = now.strftime("%Y-%m-%d")
 
-    if any(t["symbol"] == sym and t["status"] == "open" for t in trades):
+    # ไม้ที่ไม่นับ (EXCLUDED_TRADES) ไม่กินโควตาและไม่กันไม้ใหม่ — มันไม่ใช่ไม้ของระบบที่เราวัด
+    live = [t for t in trades if not excluded(t)]
+    if any(t["symbol"] == sym and t["status"] == "open" for t in live):
         return None                                   # ไม้เดิมยังไม่ปิด
-    if sum(1 for t in trades if t["symbol"] == sym and t["date"] == today) >= MAX_TRADES_PER_DAY:
+    if sum(1 for t in live if t["symbol"] == sym and t["date"] == today) >= MAX_TRADES_PER_DAY:
         return None                                   # ครบลิมิตของวัน
 
     t = {
@@ -322,8 +340,13 @@ def resolve(trades: list[dict], bars_fn=_bars_5m, now: datetime | None = None) -
 # สถิติ
 # ════════════════════════════════════════════════
 def stats(trades: list[dict], month: str | None = None) -> dict:
-    """month = 'YYYY-MM' หรือ None = ทั้งหมด · นับเฉพาะไม้ที่ปิดแล้ว"""
-    sel = [t for t in trades if month is None or t["date"].startswith(month)]
+    """
+    month = 'YYYY-MM' หรือ None = ทั้งหมด · นับเฉพาะไม้ที่ปิดแล้ว
+    ไม้ใน EXCLUDED_TRADES ไม่ถูกนับในตัวเลขใดเลย — อยู่ใน n_excluded / excluded ให้เห็นแยก
+    """
+    month_sel = [t for t in trades if month is None or t["date"].startswith(month)]
+    skip = [t for t in month_sel if excluded(t)]
+    sel = [t for t in month_sel if not excluded(t)]
     done = [t for t in sel if t["status"] in ("win", "loss", "timeout")
             and t.get("realized_r") is not None]
     # no_fill = สัญญาณเกิดแต่ไม่เคยได้เข้าไม้ — ไม่ใช่แพ้ ไม่ใช่ชนะ ต้องแยกออกจากสถิติ
@@ -333,6 +356,10 @@ def stats(trades: list[dict], month: str | None = None) -> dict:
         "month": month, "n_all": len(sel), "n_closed": len(done),
         "n_open": sum(1 for t in sel if t["status"] == "open"),
         "n_no_fill": len(no_fill),
+        "n_excluded": len(skip),
+        "excluded": [{"id": t.get("id"), "reason": excluded(t), "status": t.get("status"),
+                      "realized_r": t.get("realized_r"), "pnl_usd": t.get("pnl_usd")}
+                     for t in skip],
         "fill_rate": (len(done) / (len(done) + len(no_fill))
                       if (done or no_fill) else None),
         "wins": 0, "losses": 0, "timeouts": 0, "win_rate": None,
@@ -376,12 +403,25 @@ def stats(trades: list[dict], month: str | None = None) -> dict:
     return out
 
 
+def excluded_text(s: dict) -> str:
+    """บรรทัดบอกไม้ที่ไม่นับ — ว่างถ้าไม่มี · ใช้ทั้งข้อความ อีเมล และแท็บ P&L"""
+    if not s.get("n_excluded"):
+        return ""
+    parts = []
+    for x in s["excluded"]:
+        res = (f"{x['status']} {x['realized_r']:+.2f}R" if x.get("realized_r") is not None
+               else x.get("status") or "?")
+        parts.append(f"{x['id']} [{res}] — {x['reason']}")
+    return f"ไม่นับ {s['n_excluded']} ไม้ (ยังอยู่ใน ledger): " + " · ".join(parts)
+
+
 def render_text(s: dict) -> str:
     """สรุปแบบข้อความ — ใช้ในอีเมลรายเดือนและปุ่มดาวน์โหลด"""
     if not s["n_closed"]:
         return (f"Forward Test {s['month'] or 'ทั้งหมด'} — ยังไม่มีไม้ที่ปิด "
                 f"(เปิดค้าง {s['n_open']} ไม้)\n"
-                "ยังไม่มีอะไรให้สรุป — ระบบเข้าไม้เฉพาะตอน ARMED ซึ่งเกิดไม่บ่อย")
+                "ยังไม่มีอะไรให้สรุป — ระบบเข้าไม้เฉพาะตอน ARMED ซึ่งเกิดไม่บ่อย"
+                + (f"\n{excluded_text(s)}" if s.get("n_excluded") else ""))
     L = [f"Forward Test {s['month'] or 'ทั้งหมด'} — {SYMBOL} · พอร์ตจำลอง "
          f"${ACCOUNT_START:,.0f} · ไม้ละ {QTY} หน่วยเท่ากันทั้ง LONG/SHORT (1 จุด = ${QTY})",
          "=" * 74,
@@ -401,6 +441,8 @@ def render_text(s: dict) -> str:
     if s.get("fill_rate") is not None and s.get("n_no_fill"):
         L.append(f"  Fill rate        {s['fill_rate']*100:.1f}%  "
                  f"({s['n_no_fill']} สัญญาณไม่เคยได้เข้าไม้จริง)")
+    if s.get("n_excluded"):
+        L.append(f"  {excluded_text(s)}")
     L += ["=" * 74]
     if s["n_closed"] < 20:
         L.append(f"⚠️ {s['n_closed']} ไม้ยังน้อยเกินกว่าจะสรุปว่ามี edge — ที่ win rate ระดับนี้ "

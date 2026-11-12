@@ -31,11 +31,14 @@ def build_html(s: dict, trades: list[dict]) -> str:
                 + (f'<div style="color:{DIM};font-size:10.5px;margin-top:2px">{note}</div>'
                    if note else "") + '</td>')
 
+    # ไม้ที่ไม่นับ (ft.EXCLUDED_TRADES) — โชว์ให้เห็นทุกครั้ง ไม่ซ่อน แต่ไม่อยู่ในตัวเลขใด
+    skip_note = (f'<div style="color:{DIM};font-size:11.5px;margin:0 0 12px">'
+                 f'{ft.excluded_text(s)}</div>' if s.get("n_excluded") else "")
     if not s["n_closed"]:
         body = (f'<div style="background:{CARD};border:1px solid {LINE};border-radius:8px;'
                 f'padding:20px;color:{DIM};font-size:13px">'
                 f'ยังไม่มีไม้ที่ปิดในช่วงนี้ (เปิดค้าง {s["n_open"]} ไม้) — '
-                f'ระบบเข้าไม้เฉพาะตอน ARMED ซึ่งเกิดไม่บ่อยตามตั้งใจ</div>')
+                f'ระบบเข้าไม้เฉพาะตอน ARMED ซึ่งเกิดไม่บ่อยตามตั้งใจ</div>' + skip_note)
     else:
         rows = "".join(
             f'<tr>'
@@ -54,7 +57,7 @@ def build_html(s: dict, trades: list[dict]) -> str:
             f'color:{"#2ecc71" if t["pnl_usd"] > 0 else "#e74c3c"};'
             f'font-family:monospace;font-size:11.5px">${t["pnl_usd"]:+,.2f}</td>'
             f'<td style="padding:7px 9px;border-bottom:1px solid {LINE};color:{DIM};'
-            f'font-size:10.5px">{t["status"]}</td></tr>'
+            f'font-size:10.5px">{t["status"]}{" · ไม่นับ" if ft.excluded(t) else ""}</td></tr>'
             for t in sorted((x for x in trades if x.get("realized_r") is not None),
                             key=lambda x: x.get("closed_at") or x["opened"]))
         pass_fail = (s["win_rate"] > s["breakeven_wr"]) if s["breakeven_wr"] else None
@@ -81,6 +84,7 @@ def build_html(s: dict, trades: list[dict]) -> str:
             + (f'<div style="color:{DIM};font-size:12px;margin-bottom:6px">'
                f'{"ผ่านจุดเท่าทุน" if pass_fail else "ยังไม่ผ่านจุดเท่าทุน"}</div>'
                if pass_fail is not None else "")
+            + skip_note
             + f'<div style="background:{CARD};border:1px solid {LINE};border-radius:8px;'
               f'padding:6px 10px 10px"><table style="width:100%;border-collapse:collapse">'
               f'{rows}</table></div>')

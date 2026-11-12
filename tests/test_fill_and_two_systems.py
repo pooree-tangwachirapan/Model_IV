@@ -136,6 +136,51 @@ tr=[]
 got = ft.record(tr, bg, now=T0, system="breakout")
 check("record รับ plan ของ breakout ได้", got is not None and tr[0]["system"]=="breakout")
 
+print("\n=== L. ไม้ที่เก็บไว้แต่ไม่นับ (EXCLUDED_TRADES · HANDOFF §6.17) ===")
+REAL = "QQQ-20261109-162210"
+check("ไม้ 9 พ.ย. อยู่ในรายการไม่นับ", REAL in ft.EXCLUDED_TRADES and ft.excluded({"id": REAL}))
+_bl = ft.load(ft.ledger_path("breakout"))
+check("id ในรายการมีอยู่จริงใน ledger (กันพิมพ์ผิดแล้วไม่มีผลอะไรเลย)",
+      not _bl or any(t.get("id") == REAL for t in _bl), f"ledger มี {len(_bl)} ไม้")
+_saved = dict(ft.EXCLUDED_TRADES)
+try:
+    ft.EXCLUDED_TRADES["T-bug"] = "ไม้จากบั๊กสำหรับเทสต์"
+    bug_win = dict(mk(system="breakout", entry=100.0), id="T-bug", status="loss",
+                   realized_r=-1.0, pnl_usd=-100.0, exit=99.0, closed_at=LATER.isoformat())
+    real_win = dict(mk(system="breakout", entry=100.0), id="T-real", status="win",
+                    realized_r=5.0, pnl_usd=500.0, exit=105.0, closed_at=LATER.isoformat())
+    s = ft.stats([bug_win, real_win])
+    check("ไม้ที่ไม่นับไม่อยู่ในตัวเลขใดเลย", s["n_closed"] == 1 and s["wins"] == 1 and s["losses"] == 0
+          and s["pnl_usd"] == 500.0 and s["n_all"] == 1, f"ได้ {s['n_closed']} ไม้ ${s['pnl_usd']}")
+    check("แต่โชว์แยกให้เห็น พร้อมเหตุผล", s["n_excluded"] == 1 and s["excluded"][0]["id"] == "T-bug"
+          and s["excluded"][0]["reason"] == "ไม้จากบั๊กสำหรับเทสต์", f"ได้ {s['excluded']}")
+    txt = ft.render_text(s)
+    check("สรุปข้อความบอกไม้ที่ไม่นับ", "ไม่นับ 1 ไม้" in txt and "T-bug" in txt)
+    s_only = ft.stats([dict(mk(system="breakout"), id="T-bug")])           # ไม้ไม่นับที่ยังเปิด
+    check("ไม่มีไม้อื่น → ไม่มีไม้ค้างให้นับ แต่ยังเห็นแยก", s_only["n_open"] == 0
+          and s_only["n_excluded"] == 1 and "ไม่นับ 1 ไม้" in ft.render_text(s_only),
+          f"ได้ open {s_only['n_open']} excl {s_only['n_excluded']}")
+
+    import run_forward_test as rft
+    htm = rft.build_html(s, [bug_win, real_win])
+    check("อีเมลรายเดือนติดป้าย 'ไม่นับ' ที่แถวไม้นั้น + บอกเหตุผล",
+          "loss · ไม่นับ" in htm and "ไม้จากบั๊กสำหรับเทสต์" in htm)
+
+    # ไม้จากบั๊กที่ยังเปิดค้าง ต้องไม่กันไม้จริงของระบบ (ไม่งั้นค้างจนหมดเวลาถือ 3 วันทำการ)
+    open_bug = dict(mk(system="breakout"), id="T-bug", status="open")
+    tr = [open_bug]
+    got = ft.record(tr, bg, now=LATER, system="breakout")
+    check("ไม้ไม่นับที่ยังเปิด ไม่กันการเปิดไม้ใหม่", got is not None and len(tr) == 2,
+          f"ได้ {got}")
+    tr = [dict(mk(system="breakout"), id="T-real", status="open")]
+    check("ไม้ปกติที่ยังเปิด ยังกันเหมือนเดิม", ft.record(tr, bg, now=LATER, system="breakout") is None)
+    same_day = [dict(mk(system="breakout"), id="T-bug", status="loss", date=LATER.strftime("%Y-%m-%d")),
+                dict(mk(system="breakout"), id="T-x1", status="loss", date=LATER.strftime("%Y-%m-%d"))]
+    check("ไม้ไม่นับไม่กินโควตารายวัน", ft.record(same_day, bg, now=LATER, system="breakout") is not None)
+finally:
+    ft.EXCLUDED_TRADES.clear(); ft.EXCLUDED_TRADES.update(_saved)
+check("คืนรายการจริงแล้ว", ft.EXCLUDED_TRADES == _saved)
+
 print("\n" + "="*70)
 print(f"สรุป: {'ผ่านหมด' if not FAIL else str(len(FAIL))+' รายการไม่ผ่าน'}")
 for f in FAIL: print(f"  - {f}")

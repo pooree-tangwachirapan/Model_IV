@@ -59,6 +59,9 @@ def render_pnl_tab():
     sel = [t for t in trades if month is None or t["date"].startswith(month)]
 
     _stat_row(s)
+    if s.get("n_excluded"):
+        # ไม้จากบั๊กที่ยืนยันแล้ว (ft.EXCLUDED_TRADES) — อยู่ในตารางด้านล่าง แต่ไม่อยู่ในตัวเลขด้านบน
+        st.caption(f"ℹ️ {ft.excluded_text(s)}")
 
     if s["n_closed"] < 20:
         st.warning(f"**{s['n_closed']} ไม้ยังน้อยเกินกว่าจะสรุปว่ามี edge** — "
@@ -95,7 +98,8 @@ def render_pnl_tab():
         st.dataframe(pd.DataFrame([{
             "เปิดเมื่อ": t["opened"][:16].replace("T", " "), "ทิศ": t["side"],
             "เข้า": t["entry"], "invalidate": t["invalidation"], "เป้า": t["target"],
-            "แผน R": round(t["plan_r"], 2), "หมายเหตุ": t.get("note", ""),
+            "แผน R": round(t["plan_r"], 2),
+            "หมายเหตุ": ("ไม่นับ — " + ft.excluded(t)) if ft.excluded(t) else t.get("note", ""),
         } for t in op]), width="stretch", hide_index=True)
 
     # ── ไม้ที่ปิดแล้ว ──
@@ -106,7 +110,7 @@ def render_pnl_tab():
             "วันที่": t["date"], "ทิศ": t["side"], "เข้า": t["entry"], "ออก": t["exit"],
             "invalidate": t["invalidation"], "เป้า": t["target"],
             "แผน R": round(t["plan_r"], 2), "R จริง": t["realized_r"],
-            "P&L": t["pnl_usd"], "ผล": t["status"],
+            "P&L": t["pnl_usd"], "ผล": t["status"] + (" · ไม่นับ" if ft.excluded(t) else ""),
         } for t in sorted(done, key=lambda x: x.get("closed_at") or x["opened"], reverse=True)]),
             width="stretch", hide_index=True)
 
