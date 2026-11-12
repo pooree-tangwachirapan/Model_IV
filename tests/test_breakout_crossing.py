@@ -21,7 +21,7 @@ import warnings; warnings.filterwarnings("ignore")
 import json, os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # โฟลเดอร์แม่ = โค้ดจริง
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import breakout, gate, predictions as pr, snapshot as sn
 
@@ -260,24 +260,70 @@ check("fetch_chain ยังคืน (df, spot) เหมือนเดิม"
 check("high/low แนบมากับ df.attrs['session']", (df.attrs.get("session") or {}).get("high") == 682.48,
       f"ได้ {df.attrs}")
 
-# ข้อจำกัดที่ตั้งใจเก็บไว้ (HANDOFF §6.17): ก่อนเปิด high/low ยังเป็นของวันก่อน → ยืนยันด้วยการข้ามเมื่อวาน
-# รันจริง 10 พ.ย. 04:xx ET ได้ ARMED แบบนี้ · ถ้าวันหนึ่งเพิ่มด่านกระดานค้าง ต้องแก้เทสต์นี้ด้วยความตั้งใจ
-pre = breakout.evaluate(snap(678.22, 680.0, 700.0, 703.01, -3.68e9, 7.55, session=q))
+# ด่านกระดานค้าง (12.11.2026 · HANDOFF §6.17 ข้อ 2): ก่อนเปิด high/low ยังเป็นของวันก่อน (เกิดก่อนปิดวันก่อน)
+# รันจริง 10 พ.ย. 04:xx ET + รอบ 09:00 ET ใน log เคยได้ ARMED จาก high 682.48 ของวันที่ 9 — ต้องไม่ได้อีก
+pre_args = (678.22, 680.0, 700.0, 703.01, -3.68e9, 7.55)
+sfs = getattr(sn, "session_for_snapshot", None)
+qs = sfs(df, date(2026, 11, 10)) if sfs else {}
+check("df จาก CBOE ก่อนเปิด 10 พ.ย. → stale (t เป็นของ 9 พ.ย.)", (qs or {}).get("stale") is True, f"ได้ {qs}")
+pre = breakout.evaluate(snap(*pre_args, session=qs))
 row = gate_row(pre, CROSS) or {}
-check("ก่อนเปิด: ยืนยันด้วย high ของ session ก่อน และค่าประตูบอกวันของมัน ไม่เขียนว่า 'วันนี้'",
-      row.get("ok") is True and "(2026-11-09)" in row.get("value", "")
-      and "วันนี้" not in row.get("value", ""), f"ได้ {row}")
+check("ก่อนเปิด: ไม่ใช้ high ของ session ก่อน → ยืนยันไม่ได้ → STAND_DOWN · ค่าประตูบอกวันของกระดาน",
+      pre["verdict"] == "STAND_DOWN" and pre["breach"].get("crossed", "absent") is None
+      and "2026-11-09" in row.get("value", ""), f"ได้ {pre['verdict']} {row}")
+eve = breakout.evaluate(snap(*pre_args, session=sfs(df, date(2026, 11, 9)) if sfs else {}))
+check("ตัวเลขเดียวกันตอนเย็นวันที่ 9 (ไม่ค้าง) → ใช้ high 682.48 ยืนยันได้",
+      (eve["breach"].get("cross") or {}).get("src") == "high", f"ได้ {eve['breach'].get('cross')}")
+unk = breakout.evaluate(snap(*pre_args, session=q))
+check("ไม่รู้ว่าค้างไหม (ไม่มีธง stale) → ทำเหมือนเดิม ไม่ปิดหลักฐานทิ้งเงียบ ๆ",
+      (unk["breach"].get("cross") or {}).get("src") == "high", f"ได้ {unk['breach'].get('cross')}")
+gap = breakout.evaluate(snap(*pre_args, session=dict(qs or {}, prev_close=681.0)))
+check("กระดานค้างแต่ปิดวันก่อนอยู่เหนือกำแพง → ยืนยันด้วยราคาปิด (ข้ามหลังปิด) → ARMED",
+      (gap["breach"].get("cross") or {}).get("src") == "prev_close" and gap["verdict"] == "ARMED",
+      f"ได้ {gap['verdict']} {gap['breach'].get('cross')}")
 
-print("\n=== 13. log เก็บ high/low/ปิดวันก่อนไว้ย้อนตรวจ ===")
-r1 = pr.to_record(dict(b1, system="breakout"), dict(s1, session=dict(S9, last_trade_time="t")),
+print("\n=== 13. log เก็บ high/low/ปิดวันก่อน + ธงกระดานค้างไว้ย้อนตรวจ ===")
+r1 = pr.to_record(dict(b1, system="breakout"),
+                  dict(s1, session=dict(S9, last_trade_time="t", stale=False)),
                   datetime(2026, 11, 9, 16, 22, 2, tzinfo=UTC))
-check("record มี sess ครบ", r1.get("sess") == {"hi": 678.85, "lo": 662.02, "pc": 656.10, "t": "t"},
-      f"ได้ {r1.get('sess')}")
+check("record มี sess ครบ", r1.get("sess") == {"hi": 678.85, "lo": 662.02, "pc": 656.10, "t": "t",
+                                                "st": False}, f"ได้ {r1.get('sess')}")
 check("record มีผลประตูใหม่", r1["gates"].get(CROSS) is False, f"ได้ {r1['gates']}")
 check("serialize เป็น JSON ได้", isinstance(json.dumps(r1, ensure_ascii=False), str))
 r0 = pr.to_record(dict(none_s, system="breakout"), snap(676.67, 680.0, 700.0, 697.3, -1e9, 7.6))
 check("snapshot ไม่มี session → sess = None (ไม่เดาค่า)", r0.get("sess", "missing") is None,
       f"ได้ {r0.get('sess', 'missing')}")
+
+print("\n=== 14. 10 พ.ย. 14:00:11Z (09:00 ET) record จริง — ARMED จากกระดานค้าง ===")
+S10 = {"high": 682.48, "low": 662.02, "prev_close": 679.35, "last_trade_time": "2026-11-09T15:59:59"}
+args10 = (676.6, 680.0, 700.0, 693.914052754915, -4124194028.183152, 12.1754639153789)
+kw10 = dict(pw_oi=650.0, cw_oi=700.0, mp=675.0, net_prof=-3793980169.669641)
+was = breakout.evaluate(snap(*args10, **kw10, session=dict(S10, stale=None)))
+check("ไม่มีธง (แบบตอนนั้น) → ARMED · R 4.196 เท่าที่ log บันทึก",
+      was["verdict"] == "ARMED" and round((was.get("plan") or {}).get("plan_r", 0), 3) == 4.196,
+      f"ได้ {was['verdict']} {was.get('plan')}")
+f_st = getattr(sn, "session_is_stale", None)
+now10 = breakout.evaluate(snap(*args10, **kw10,
+                               session=dict(S10, stale=f_st(S10, date(2026, 11, 10)) if f_st else None)))
+check("มีด่าน → STAND_DOWN ตัวปิดคือการข้ามกำแพงตัวเดียว (ปิดวันก่อน 679.35 < 680)",
+      now10["verdict"] == "STAND_DOWN" and failed(now10) == [CROSS],
+      f"ได้ {now10['verdict']} {failed(now10)}")
+check("headline = ยืนยันไม่ได้ (ก่อนเปิดไม่รู้ว่า pre-market ไปถึงไหน — ไม่ใช่ 'ไม่ใช่การทะลุ')",
+      now10["headline"].startswith("ยืนยันไม่ได้"), f"ได้ {now10['headline']!r}")
+
+print("\n=== 15. session_is_stale — วันของ last_trade_time เทียบวันนี้ (ET) ===")
+cases = [("2026-11-09T15:59:59", date(2026, 11, 10), True),    # ก่อนเปิด 10.11 (ของจริงใน log)
+         ("2026-11-10T09:36:15", date(2026, 11, 10), False),   # รอบ 09:52 ET 10.11 (ของจริงใน log)
+         ("2026-11-09T15:59:59", date(2026, 11, 9), False),    # เย็นวันเดียวกัน
+         ("2026-11-06T15:59:59", date(2026, 11, 9), True),     # จันทร์ก่อนเปิด หลังเสาร์อาทิตย์
+         (None, date(2026, 11, 10), None), ("", date(2026, 11, 10), None),
+         ("abc", date(2026, 11, 10), None)]
+bad = [(t, d, w) for t, d, w in cases if not f_st or f_st({"last_trade_time": t}, d) is not w]
+check("ทุกกรณีถูก (ไม่รู้ = None ไม่ใช่ True)", not bad, f"ผิด: {bad}")
+check("session เป็น None → None", f_st is not None and f_st(None, date(2026, 11, 10)) is None)
+import pandas as pd
+check("df ไม่มี attrs → session None (breakout จะยืนยันไม่ได้)",
+      sfs is not None and sfs(pd.DataFrame(), date(2026, 11, 10)) is None)
 
 print("\n" + "=" * 70)
 print(f"สรุป: {'ผ่านหมด' if not FAIL else str(len(FAIL)) + ' รายการไม่ผ่าน'}")

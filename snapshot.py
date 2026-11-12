@@ -15,10 +15,11 @@ import time
 import numpy as np
 import pandas as pd
 import requests
-from datetime import datetime
+from datetime import date, datetime
 from scipy.stats import norm
 
 import fa_gex
+import market_clock as mc
 
 CBOE = "https://cdn.cboe.com/api/global/delayed_quotes/options"
 HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -77,8 +78,11 @@ def session_from_quote(d: dict) -> dict:
       · close 679.35) · open ต่าง 0.05 (662.69 vs 662.64)
     · ก่อนกระดานวันใหม่มา (ก่อน ~09:45 ET) ยังเป็นของวันก่อน และ prev_day_close เลื่อนเป็นปิดของวันนั้นแล้ว
       (เห็น 10 พ.ย. 03:54 ET: high/low ของ 9 พ.ย. · prev_day_close = close = 679.35) — HANDOFF §6.17
-    · last_trade_time — เห็นครั้งเดียว (10 พ.ย. 03:54 ET) เป็น 15:59:59 ของ 9 พ.ย. ขณะที่ current_price
-      ขยับตาม pre-market ไปแล้ว · เก็บไว้ดูว่า high/low เป็นของวันไหน — ยังไม่ได้ใช้ตัดสิน
+      prev_day_close เลื่อนตั้งแต่เย็นวันเดียวกัน (11 พ.ย. 21:29 ET = 690.38 ปิดของวันที่ 11 เอง) → ช่วงเย็น
+      "ปิดวันก่อน" จริงหายไป หลักฐาน gap ใช้ไม่ได้ (พลาดไปทางไม่ยืนยัน · ไม่มี workflow ประเมินช่วงนั้น)
+    · last_trade_time = เวลา (ET) ของเทรดล่าสุดในเวลาทำการ → วันของมันคือวันของ open/high/low
+      วัดจาก log 10–11.11.2026: เป็น 15:59:59 ของวันก่อนจนถึงรอบ 09:37 ET แล้วเป็นวันนั้นตั้งแต่รอบ 09:52 ET
+      (09:36 ET · ดีเลย์ ~16 นาที) ทั้งสองวัน — session_is_stale() ใช้ตัวนี้ตัดสินว่ากระดานค้างไหม
     ค่าที่ไม่ใช่ตัวเลขบวก → None (CBOE ส่ง 0 มาได้ เช่น quote ของ VIX1D ที่ high/low = 0)
     """
     def px(key):
@@ -91,6 +95,32 @@ def session_from_quote(d: dict) -> dict:
     return {"open": px("open"), "high": px("high"), "low": px("low"),
             "prev_close": px("prev_day_close"),
             "last_trade_time": d.get("last_trade_time"), "src": "cboe"}
+
+
+def session_is_stale(session: dict | None, today: date) -> bool | None:
+    """
+    high/low ยังเป็นของ session ก่อนหรือเปล่า — วันของ last_trade_time < วันนี้ (ET) = กระดานค้าง
+
+    True  = ก่อนเปิด หรือช่วงแรกหลังเปิดที่ CBOE ดีเลย์จนยังไม่เห็นเทรดของวันนี้
+            → high/low ของวันก่อนเกิดก่อนราคาปิดวันก่อน ใช้ยืนยัน "ข้ามกำแพงตั้งแต่ปิดวันก่อน" ไม่ได้
+    False = high/low เป็นของวันนี้
+    None  = ไม่รู้ (ไม่มี/อ่าน last_trade_time ไม่ออก) → ผู้ใช้ต้องทำเหมือนเดิม ไม่ปิดหลักฐานทิ้งเงียบ ๆ
+    รับ today จากผู้เรียก (ไม่ถามนาฬิกาเอง) — เทสต์ตรึงวันได้ · ของจริงใช้ market_clock.today_et() (§6.12)
+    """
+    t = (session or {}).get("last_trade_time")
+    try:
+        d = date.fromisoformat(str(t)[:10])
+    except (TypeError, ValueError):
+        return None
+    return d < today
+
+
+def session_for_snapshot(raw: pd.DataFrame, today: date) -> dict | None:
+    """session ที่ fetch_chain แนบมากับ df.attrs + ธง stale · ไม่มี = None (breakout จะยืนยันการข้ามไม่ได้)"""
+    s = raw.attrs.get("session")
+    if not s:
+        return None
+    return dict(s, stale=session_is_stale(s, today))
 
 
 def get_macro() -> dict:
@@ -374,7 +404,8 @@ def build_snapshot(sym: str = "QQQ", hv_ticker: str | None = None,
     if raw.empty or not S:
         return {"error": f"ดึง chain ของ {sym} ไม่ได้", "symbol": sym}
     # อ่านทันทีหลังดึง ก่อนแปลง DataFrame ต่อ — None = breakout ยืนยันการข้ามกำแพงไม่ได้ (ไม่ไล่)
-    session = raw.attrs.get("session")
+    # stale = กระดานยังเป็นของวันก่อน (ก่อนเปิด) → breakout ไม่ใช้ high/low (HANDOFF §6.17 ข้อ 2)
+    session = session_for_snapshot(raw, mc.today_et())
 
     df = fa_gex.parse_cboe_for_gex(raw, S)
     if df.empty:

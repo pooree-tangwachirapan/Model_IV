@@ -76,9 +76,10 @@ def to_record(g: dict, snap: dict, when: datetime | None = None) -> dict:
         },
         # ช่วงราคาที่ breakout ใช้ตัดสินว่า "ข้ามกำแพงมาจริงไหม" — ไม่เก็บ = ย้อนตรวจไม่ได้
         # (9 พ.ย. 2026 ต้องประกอบ high ณ ตอนนั้นจากแท่ง Yahoo เพราะ log ไม่มี · HANDOFF §6.17)
-        # t = last_trade_time ของ CBOE — ไว้ดูทีหลังว่า high/low ตอนก่อนเปิดเป็นของวันไหน
+        # t = last_trade_time ของ CBOE (วันของ high/low) · st = ธงกระดานค้างที่ใช้ตัดสินจริง
+        # (True = ไม่ใช้ high/low · คำนวณจาก t เทียบวันที่ ET ตอนดึง — เก็บไว้ให้ replay ไม่ต้องคำนวณเอง)
         "sess": ({"hi": se.get("high"), "lo": se.get("low"), "pc": se.get("prev_close"),
-                  "t": se.get("last_trade_time")} if se else None),
+                  "t": se.get("last_trade_time"), "st": se.get("stale")} if se else None),
         # เก็บผลรายประตู เพื่อตอบทีหลังว่า "ประตูไหนเป็นตัวปิด" โดยไม่ต้องเดาจาก reason
         "gates": {r["label"]: bool(r["ok"]) for r in (g.get("hard") or [])},
         "soft": {r["label"]: bool(r["ok"]) for r in (g.get("soft") or [])},

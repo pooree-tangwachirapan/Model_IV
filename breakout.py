@@ -126,26 +126,30 @@ def crossing(direction: str, wall: float, session: dict | None) -> dict:
       · high/low คือเส้นทางราคาต่อเนื่อง — รอบประเมินเป็นแค่จุดห่างกัน 15 นาทีที่หายได้ทั้งรอบ (§6.16)
         และ lookback รอบเดียวจะตัดการทะลุแบบค่อย ๆ (แหย่ <0.10×EM ก่อนแล้วค่อยเข้าหน้าต่าง) ทิ้งหมด
 
-    ข้อจำกัดที่รู้: ก่อนกระดานของวันใหม่มา (~09:45 ET) high/low ยังเป็นของวันก่อน → ช่วงที่ดูยืดไปถึง
-    ต้นวันก่อน (เห็นจริง 10 พ.ย. 04:xx ET: ยืนยันด้วย high 682.48 ของ 9 พ.ย.) · ไม่ถึง ledger เพราะ
-    armed-alert เปิดไม้ตั้งแต่เปิดตลาด +48 นาที แต่โผล่ในเมล 09:00 ET + log — ค่าประตูจึงบอกวันของ high/low
-    (§6.16 ก็ห้ามใช้ snapshot ก่อน 10:00 อยู่แล้ว)
-    · high/low ไม่บอกลำดับเวลา จึงแยก "ทะลุแล้ววิ่งเลยหน้าต่างไปแล้วเด้งกลับมาหากำแพง" ไม่ออก
+    กระดานค้าง (ด่านเพิ่ม 12.11.2026): ก่อนกระดานของวันใหม่มา (~09:45 ET) high/low ยังเป็นของวันก่อน
+    ซึ่งเกิดก่อนราคาปิดวันก่อน — ถ้าใช้ ช่วงที่ดูจะยืดไปถึงต้นวันก่อน (10 พ.ย. 09:00 ET เคย ARMED SHORT ด้วย
+    high 682.48 ของวันที่ 9) · snapshot ติดธง stale จากวันของ last_trade_time (session_is_stale) → ตัด high/low
+    ทิ้ง เหลือ prev_close (ข้ามหลังปิดยังยืนยันได้) ไม่งั้น = ยืนยันไม่ได้ · ไม่รู้ว่าค้างไหม (stale None) = ใช้ตามเดิม
+
+    ข้อจำกัดที่รู้: high/low ไม่บอกลำดับเวลา จึงแยก "ทะลุแล้ววิ่งเลยหน้าต่างไปแล้วเด้งกลับมาหากำแพง" ไม่ออก
 
     คืน dict: crossed = True / False / None (ยืนยันไม่ได้: ขาดข้อมูลบางตัว และตัวที่มีไม่ยืนยัน)
               src / ref = ข้อมูลตัวไหนยืนยัน ที่ราคาเท่าไหร่ · missing = field ที่ไม่มี
     ประตูนับ None เป็นไม่ผ่าน — ไม่รู้ = ไม่ไล่ (แบบเดียวกับไม่มี flip / ไม่มี EM)
     """
     s = session or {}
-    hi, lo, pc = _px(s.get("high")), _px(s.get("low")), _px(s.get("prev_close"))
+    # กระดานค้าง (snapshot.session_is_stale) → high/low เป็นของ session ก่อน ใช้เป็นหลักฐานไม่ได้
+    stale = s.get("stale") is True
+    hi = None if stale else _px(s.get("high"))
+    lo = None if stale else _px(s.get("low"))
+    pc = _px(s.get("prev_close"))
     down = direction == "DOWN"
-    # เช็คของวันนี้ก่อน — บอกได้มากกว่า "ปิดวันก่อนอยู่ฝั่งใน" (ซึ่งแปลว่าข้ามตอน gap หรือระหว่างวัน)
+    # เช็คของวันนี้ก่อน — บอกได้มากกว่า "ปิดวันก่อนอยู่ฝั่งใน" (ซึ่งแปลว่าข้ามหลังปิด)
     cands = [("high", hi) if down else ("low", lo), ("prev_close", pc)]
-    # วันของ high/low ตาม last_trade_time — โชว์ในค่าประตูให้เห็นว่ากระดานยังค้างเป็นของวันก่อนไหม
-    # ยังไม่ใช้ตัดสิน: เคยเห็น field นี้แค่ตอนก่อนเปิด (HANDOFF §6.17 · ต้องวัดระหว่างวันก่อน)
+    # วันของ high/low = วันของ last_trade_time — โชว์ในค่าประตู (ตัวตัดสินจริงคือธง stale จาก snapshot)
     ltt = s.get("last_trade_time")
     out = {"crossed": False, "src": None, "ref": None, "high": hi, "low": lo, "prev_close": pc,
-           "session_date": str(ltt)[:10] if ltt else None,
+           "stale": stale, "session_date": str(ltt)[:10] if ltt else None,
            "missing": [k for k, v in cands if v is None]}
     for key, v in cands:
         if v is not None and (v >= wall if down else v <= wall):
@@ -165,8 +169,11 @@ def _cross_text(br: dict) -> str:
     ext_name, ext = (f"high{day}", cx["high"]) if down else (f"low{day}", cx["low"])
     if cx["crossed"]:
         if cx["src"] == "prev_close":
-            return f"ปิดวันก่อน {f(cx['ref'])} {op} {w:,.2f} — ข้ามตอน gap/ระหว่างวัน"
+            return f"ปิดวันก่อน {f(cx['ref'])} {op} {w:,.2f} — ข้ามหลังปิดวันก่อน"
         return f"{ext_name} {f(cx['ref'])} {op} {w:,.2f}"
+    if cx.get("stale"):
+        return (f"ยืนยันไม่ได้ — กระดานยังเป็นของ {cx.get('session_date') or 'วันก่อน'} ใช้ high/low ไม่ได้ "
+                f"· ปิดวันก่อน {f(cx['prev_close'])} ไม่ยืนยัน")
     seen = f"ปิดวันก่อน {f(cx['prev_close'])} · {ext_name} {f(ext)}"
     if cx["crossed"] is None:
         miss = " / ".join(_MISSING_TH.get(k, k) for k in cx["missing"])

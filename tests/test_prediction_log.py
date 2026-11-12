@@ -74,7 +74,8 @@ for g in (fg, bg):
 r_b = pr.to_record(bg, snap, T0)
 check("breakout ARMED เก็บแผนไว้ด้วย", r_b["plan"] is not None and r_b["plan"]["r"], f"ได้ {r_b['plan']}")
 check("เก็บ high/low/ปิดวันก่อนที่ใช้ตัดสินการข้ามกำแพง",
-      r_b.get("sess") == {"hi": 731.8, "lo": 725.0, "pc": 726.0, "t": "2026-08-20T11:00:00"},
+      r_b.get("sess") == {"hi": 731.8, "lo": 725.0, "pc": 726.0, "t": "2026-08-20T11:00:00",
+                          "st": None},
       f"ได้ {r_b.get('sess')}")
 r_f = pr.to_record(fg, snap, T0)
 check("fade STAND_DOWN ก็ยังเก็บผลรายประตู", len(r_f["gates"]) >= 2, f"ได้ {r_f['gates']}")
