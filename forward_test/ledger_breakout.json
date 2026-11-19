@@ -166,5 +166,29 @@
   "realized_r": null,
   "pnl_usd": null,
   "note": ""
+ },
+ {
+  "id": "QQQ-20261119-192258",
+  "system": "breakout",
+  "symbol": "QQQ",
+  "date": "2026-11-19",
+  "opened": "2026-11-19T19:22:58+00:00",
+  "side": "SHORT",
+  "entry": 647.99,
+  "invalidation": 653.65,
+  "target": 613.49,
+  "plan_r": 6.088354,
+  "qty": 100,
+  "risk_usd": 566.0,
+  "spot_at_signal": 647.99,
+  "status": "open",
+  "filled_at": null,
+  "fill_price": null,
+  "closed_date": null,
+  "closed_at": null,
+  "exit": null,
+  "realized_r": null,
+  "pnl_usd": null,
+  "note": ""
  }
 ]
